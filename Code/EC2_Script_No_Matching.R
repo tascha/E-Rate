@@ -1,0 +1,499 @@
+# This is the script that is run on a schedule on an AWS EC2 virtual machine.
+# The script wrangles the data that is used in our erate analysis and erate dashboards
+# Comments within the script describe the data wrangling steps
+
+# Print the time just to have a record of when the script starts
+# A time print happens at the end of the script also
+print(Sys.time())
+
+# Load R libraries used within the script
+library(RSocrata)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(glue)
+library(purrr)
+library(janitor)
+library(rqdatatable)
+library(aws.s3)
+library(aws.ec2metadata)
+
+# Gather the c2 budget dataset
+# The C2 Budget Tool Data FY2021+ Set is designed to assist applicants in determining their C2 budgets for 
+# each five-year cycle beginning with the first budget cycle, which starts in FY2021 and ends in FY2025. 
+# filter the API call to applicant_types that include the word Library
+c2budget <- read.socrata(
+  "https://opendata.usac.org/resource/6brt-5pbv.csv?$where=starts_with(applicant_type,%20'Library')",
+  app_token = Sys.getenv("USAC_Socrata")
+)
+
+# Write to s3 bucket
+s3write_using(c2budget,
+              FUN = write.csv,
+              bucket = "erate-data/data/6BRT-5PBV_Cat2Budgets",
+              object = "Category_2_Budgets_2021-2025_6BRT-5PBV.csv")
+
+print("c2budget dataset written to s3")
+
+# Remove the dataset from memory
+rm(c2budget)
+
+# Gather the full list of funding years available in the qdmp-ygft dataset and create a list
+# This done with a select distinct query from the API
+disbursement_years <-
+  read.csv(
+    "https://opendata.usac.org/resource/qdmp-ygft.csv?$select=distinct%20funding_year"
+  )[[1]]
+
+disb = list()
+# Loop through each available funding year and create a dataset of Funded application disbursements
+for (i in 1:length(disbursement_years)) {
+  disb[[i]] <- read.socrata(
+    glue(
+      "https://opendata.usac.org/resource/qdmp-ygft.json?form_471_frn_status_name=Funded&funding_year={disbursement_years[i]}"
+    ),
+    # Parameters: Status equals Funded, year equals year in loop
+    app_token = Sys.getenv("USAC_Socrata")
+  )
+  
+  # Write each year's data to s3 bucket
+  s3write_using(disb[[i]],
+                FUN = write.csv,
+                bucket = "erate-data/data/QDMP-YGFT_Disbursements",
+                object = glue("{disbursement_years[i]}_Funded_Disbursements.csv"))
+  
+  print(glue("{disbursement_years[i]}_Funded_Disbursements written to S3"))
+}
+
+# Combine each of the years into one big dataset
+full_disbursements <- bind_rows(disb)
+
+# Remove the list of dataframes called disb
+rm(disb)
+
+# Write the big Funded_Disbursement dataset to s3
+s3write_using(full_disbursements,
+              FUN = write.csv,
+              bucket = "erate-data/data/QDMP-YGFT_Disbursements",
+              object = "Full_Funded_Disbursements.csv")
+
+print("Full_Funded_Disbursements written to s3")
+
+# Don't remove Full_Funded_Disbursements yet - needed later on
+
+# Gather the full list of years available in the dataset and create a list
+# This done with a select distinct query from the API
+commitment_years <-
+  read.csv(
+    "https://opendata.usac.org/resource/avi8-svp9.csv?$select=distinct%20funding_year"
+  )[[1]]
+
+# Gather category 1 commitment data for funded library recipients
+
+# Create two empty lists
+y = list()
+commit1 = list()
+
+# Loop through each funding year 
+# Gather commitments data filtering by the year in the loop, 
+# chosen_category_of_service equal to Category 1, 
+# form_471_status_name equal to Committed,
+# form_471_frn_status_name equal to Funded
+for (i in 1:length(commitment_years)) {
+  y[[i]] <- read.socrata(
+    glue(
+      "https://opendata.usac.org/resource/avi8-svp9.json?chosen_category_of_service=Category1&funding_year={commitment_years[i]}&form_471_status_name=Committed&form_471_frn_status_name=Funded"
+    ),
+    # Parameters: Category 1, Funding Year, Committed
+    app_token = Sys.getenv("USAC_Socrata")
+  )
+  
+  if (dim(y[[i]])[2] == 0) {
+    print("empty")
+    }
+  else{
+    commit1[[i]] <- y[[i]] %>% 
+      # Note that this filter SHOULD NOT be done in the API call - we need all these rows for the next calculation
+      filter(organization_entity_type_name %in% c("Library", "Library System", "Consortium"))
+    
+    y[[i]] <- y[[i]] %>%
+      # Add a column indicating how many rows exist for a unique combo of billed entity no and 471 line item no
+      # in other words how many recipients of the commitment will there be
+      add_count(billed_entity_number, form_471_line_item_number, name = "count_ros") %>%
+      # Add estimated amount received by individual recipient by calculating
+      mutate(cat1_discount_by_ros_estimated = as.numeric(post_discount_extended_eligible_line_item_costs) /
+               count_ros) %>%
+      
+      # Clean strings 
+      mutate(
+        organization_entity_type_name = str_to_lower(str_trim(organization_entity_type_name, side = "both")),
+        ros_entity_type = str_to_lower(str_trim(ros_entity_type, side = "both")),
+        ros_entity_name = str_to_lower(str_trim(ros_entity_name, side = "both")),
+        ros_subtype = str_to_lower(str_trim(ros_subtype, side = "both"))
+      ) %>%
+      # Keep only ros_entity_type libraries and NIFs
+      filter(
+        stringr::str_detect(ros_entity_type, "libr") |
+          ros_entity_type == "non-instructional facility (nif)"
+      ) %>%
+      # Keep ros_entity_type libraries AND
+      # Keep NIFs that have libr in the org_entity_type_name OR
+      # NIFs that are part of consortia and have library in the name
+      filter(
+        str_detect(ros_entity_type, "libr") |
+          (
+            ros_entity_type == "non-instructional facility (nif)" &
+              str_detect(organization_entity_type_name, "libr")
+          ) |
+          (
+            ros_entity_type == "non-instructional facility (nif)" &
+              organization_entity_type_name == "consortium" &
+              str_detect(ros_entity_name, "libr")
+          ),
+        # Keep ros_subtypes that are null or NOT public schools
+        (
+          is.na(ros_subtype) | !str_detect(ros_subtype, "public school")
+        )
+      )
+    # Write to s3 bucket
+    s3write_using(y[[i]],
+                  FUN = write.csv,
+                  bucket = "erate-data/data",
+                  object = glue("Libraries_Funded_Committed_AVI8-SVP9_Category1_{commitment_years[i]}.csv")
+                  )
+    print(glue("{commitment_years[i]} Cat 1 Libraries Funded Committed Written to S3"))    
+  }
+}
+
+cat1_commitlist <- bind_rows(commit1)
+cat1_all_libs <- bind_rows(y)
+
+q = list()
+commit2 = list()
+
+# Call the API by each year for Category2 service
+for (i in 1:length(commitment_years)) {
+  q[[i]] <- read.socrata(
+    glue(
+      "https://opendata.usac.org/resource/avi8-svp9.json?chosen_category_of_service=Category2&funding_year={commitment_years[i]}&form_471_status_name=Committed&form_471_frn_status_name=Funded"
+    ),
+    # Parameters: Category 2, Funding Year, Committed, Funded
+    app_token = Sys.getenv("USAC_Socrata")
+  )
+  
+  if (dim(y[[i]])[2] == 0) {
+    print("empty")
+  }
+  else{
+    commit2[[i]] <- q[[i]] %>% 
+      # Note that this filter SHOULD NOT be done in the API call - we need all these rows for the next calculation
+      filter(organization_entity_type_name %in% c("Library", "Library System", "Consortium"))
+    
+    q[[i]] <- q[[i]] %>%
+      # Add a column indicating how many rows exist for a unique combo of billed entity no and 471 line item no
+      # in other words how many recipients of the commitment will there be
+      add_count(billed_entity_number, form_471_line_item_number, name = "count_ros") %>%
+      # Add estimated amount received by individual recipient by calculating
+      mutate(cat2_discount_by_ros = as.numeric(original_allocation) * as.numeric(dis_pct)) %>%
+      
+      # clean strings
+      mutate(
+        organization_entity_type_name = str_to_lower(str_trim(organization_entity_type_name, side = "both")),
+        ros_entity_type = str_to_lower(str_trim(ros_entity_type, side = "both")),
+        ros_entity_name = str_to_lower(str_trim(ros_entity_name, side = "both")),
+        ros_subtype = str_to_lower(str_trim(ros_subtype, side = "both"))
+      ) %>%
+      
+      # Keep only ros_entity_type libraries and NIFs
+      filter(
+        stringr::str_detect(ros_entity_type, "libr") |
+          ros_entity_type == "non-instructional facility (nif)"
+      ) %>%
+      
+      # Keep ros_entity_type libraries AND
+      # Keep NIFs that have libr in the org_entity_type_name OR
+      # NIFs that are part of consortia and have library in the name
+      filter(
+        str_detect(ros_entity_type, "libr") |
+          (
+            ros_entity_type == "non-instructional facility (nif)" &
+              str_detect(organization_entity_type_name, "libr")
+          ) |
+          (
+            ros_entity_type == "non-instructional facility (nif)" &
+              organization_entity_type_name == "consortium" &
+              str_detect(ros_entity_name, "libr")
+          ),
+        
+        # Keep ros_subtypes that are null or NOT public schools
+        (
+          is.na(ros_subtype) | !str_detect(ros_subtype, "public school")
+        )
+      )
+    # Write to s3 bucket
+    s3write_using(y[[i]],
+                  FUN = write.csv,
+                  bucket = "erate-data/data",
+                  object = glue("Libraries_Funded_Committed_AVI8-SVP9_Category2_{commitment_years[i]}.csv")
+    )
+    print(glue("{commitment_years[i]} Cat 2 Libraries Funded Committed Written to S3"))   
+  }
+}
+
+cat2_commitlist <- bind_rows(commit2)
+cat2_all_libs <- bind_rows(q)
+
+erate_libs <- bind_rows(cat1_all_libs, cat2_all_libs)
+
+disbursement_merge <- bind_rows(cat1_commitlist, cat2_commitlist)
+
+# Write to s3 bucket
+s3write_using(erate_libs,
+              FUN = write.csv,
+              bucket = "erate-data/data",
+              object = "Libraries_Funded_Committed_AVI8-SVP9.csv")
+
+print("erate_libs dataset written to s3")
+
+# Write to s3 bucket
+s3write_using(
+  disbursement_merge,
+  FUN = write.csv,
+  bucket = "erate-data/data",
+  object = "Data_for_Disbursement_Merge.csv"
+)
+
+print("Data_for_Disbursement_Merge written to s3")
+
+# Create a dataset of funding request numbers that shows how much was requested, how much was disbursed,
+# and the percentage of the request that was disbursed
+disbursement_merged <- disbursement_merge %>%
+  distinct(funding_request_number,
+           form_471_line_item_number,
+           .keep_all = T) %>%
+  mutate(
+    post_discount_extended_eligible_line_item_costs =
+      as.numeric(post_discount_extended_eligible_line_item_costs),
+    funding_request_number = as.numeric(funding_request_number)
+  ) %>%
+  group_by(funding_request_number) %>%
+  summarise(
+    post_discount_extended_eligible_line_item_costs_sum =
+      sum(post_discount_extended_eligible_line_item_costs)
+  ) %>%
+  left_join(
+    disbursement %>%
+      select(
+        funding_request_number,
+        funding_commitment_request,
+        total_authorized_disbursement
+      ) %>%
+      mutate(funding_request_number = as.numeric(funding_request_number)),
+    by = "funding_request_number"
+  ) %>%
+  mutate(
+    total_authorized_disbursement = as.numeric(total_authorized_disbursement),
+    post_discount_extended_eligible_line_item_costs_sum = as.numeric(post_discount_extended_eligible_line_item_costs_sum),
+    pct_of_committed_received = total_authorized_disbursement / post_discount_extended_eligible_line_item_costs_sum
+  )
+
+
+# Write to s3 bucket
+s3write_using(
+  disbursement_merged,
+  FUN = write.csv,
+  bucket = "erate-data/data",
+  object = "Disbursement_Merged.csv"
+)
+
+print("disbursement_merged dataset written to s3")
+
+rm(disbursement_merge, disbursement, disbursement_merged)
+
+# Read in IMLS PLS datasets stored in S3
+imls_2014to2020 <-
+  s3read_using(FUN = read.csv,
+               object = "data/IMLS_PLS_AEandOUTLETS_merged_2014-2020.csv",
+               bucket = "erate-data")
+imls_2014to2020 <- imls_2014to2020 %>% 
+  select(-X)
+
+# Import matches which were done in a separate script run manually
+matches <-
+  s3read_using(
+    FUN = read.csv,
+    na.strings = c("", " ", "N/A", "n/a"),
+    object = "data/USAC_IMLS_MATCHED.csv",
+    bucket = "erate-data"
+  )
+
+matches <- matches %>% 
+  mutate(ros_entity_number = as.numeric(ros_entity_number)) %>% 
+  select(-X)
+
+# I'm now going to add FSCSKEY and FSCS_SEQ columns to erate_libs dataset and include the matches
+erate_libs <- erate_libs %>%
+  mutate(ros_entity_number = as.numeric(ros_entity_number)) %>%
+  left_join(matches %>% 
+              select(ros_entity_number, FSCSKEY, FSCS_SEQ, MOST_RECENT_PLS),
+            by = "ros_entity_number") %>%
+  relocate(c("FSCSKEY", "FSCS_SEQ"), .after = ros_entity_number)
+
+# Write to s3 bucket
+s3write_using(erate_libs,
+              FUN = write.csv,
+              bucket = "erate-data/data",
+              object = "Libraries_Funded_Committed_AVI8-SVP9_with_FSCS_Matches.csv")
+
+print("erate_libs with FSCS dataset written to s3")
+
+# Merge USAC and IMLS
+# Left join so that we only keep ERate entities
+erate_pls <- erate_libs %>%
+  mutate(FSCS_SEQ = as.numeric(FSCS_SEQ),
+         funding_year = as.numeric(funding_year)) %>%
+  # this join adds matching IMLS outlets records
+  left_join(imls_2014to2020 %>% 
+              mutate(FSCS_SEQ = as.numeric(FSCS_SEQ),
+                     PLS_YEAR = as.numeric(PLS_YEAR)),
+            by = c('FSCSKEY' = 'FSCSKEY', 
+                   'FSCS_SEQ' = 'FSCS_SEQ', 
+                   'funding_year' = 'PLS_YEAR')) 
+
+# This adds in some fields for funding years 2021-2022 for which we don't have a PLS yet
+temp_imls <- erate_pls %>% 
+  mutate(FSCS_SEQ = as.numeric(FSCS_SEQ)) %>% 
+  filter(is.na(LIBNAME)) %>% 
+  rquery::natural_join(imls_2014to2020 %>% 
+                         mutate(FSCS_SEQ = as.numeric(FSCS_SEQ)) %>% 
+                         group_by(FSCSKEY, FSCS_SEQ) %>% 
+                         slice_max(PLS_YEAR, with_ties = FALSE) %>%
+                         select(FSCSKEY, FSCS_SEQ, STABR, LIBNAME, LIBID, ADDRESS, CITY, ZIP, CNTY, SQ_FEET, LOCALE, LOCALE_ADD),
+                       by = c("FSCSKEY", "FSCS_SEQ"),
+                       jointype = "LEFT")
+
+erate_pls <- erate_pls %>% 
+  filter(!is.na(LIBNAME)) %>%
+  bind_rows(temp_imls)%>% 
+  mutate(
+    LOCALE_ADD_DESCR = case_when(
+      LOCALE_ADD == 11 ~ "City Large",
+      LOCALE_ADD == 12 ~ "City Midsize",
+      LOCALE_ADD == 13 ~ "City Small",
+      LOCALE_ADD == 21 ~ "Suburban Large",
+      LOCALE_ADD == 22 ~ "Suburban Midsize",
+      LOCALE_ADD == 23 ~ "Suburban Small",
+      LOCALE_ADD == 31 ~ "Town Fringe",
+      LOCALE_ADD == 32 ~ "Town Distant",
+      LOCALE_ADD == 33 ~ "Town Remote",
+      LOCALE_ADD == 41 ~ "Rural Fringe",
+      LOCALE_ADD == 42 ~ "Rural Distant",
+      LOCALE_ADD == 43 ~ "Rural Remote",
+      LOCALE == 11 ~ "City Large",
+      LOCALE == 12 ~ "City Midsize",
+      LOCALE == 13 ~ "City Small",
+      LOCALE == 21 ~ "Suburban Large",
+      LOCALE == 22 ~ "Suburban Midsize",
+      LOCALE == 23 ~ "Suburban Small",
+      LOCALE == 31 ~ "Town Fringe",
+      LOCALE == 32 ~ "Town Distant",
+      LOCALE == 33 ~ "Town Remote",
+      LOCALE == 41 ~ "Rural Fringe",
+      LOCALE == 42 ~ "Rural Distant",
+      LOCALE == 43 ~ "Rural Remote"
+    )
+  )
+  
+
+# Write to s3 bucket
+s3write_using(erate_pls,
+              FUN = write.csv,
+              bucket = "erate-data/data",
+              object = "erate_imls.csv")
+
+print("erate_imls written to s3")
+
+# left join IMLS with erate_libs
+imls_erate <- imls_2014to2020 %>%
+  # We only have erate from 2016 forward so we can filter out PLS data from pre-2016
+  filter(PLS_YEAR > 2015) %>% 
+  # Using ros entity numbers join the rest of the erate data
+  left_join(erate_libs,
+            by = c("FSCSKEY", "FSCS_SEQ")) %>%
+  relocate(ros_entity_number, .before = FSCSKEY) %>% 
+  # Create a Description column for LOCALE_ADD and fill based on condition
+  mutate(
+    LOCALE_ADD_DESCR = case_when(
+      LOCALE_ADD == 11 ~ "City Large",
+      LOCALE_ADD == 12 ~ "City Midsize",
+      LOCALE_ADD == 13 ~ "City Small",
+      LOCALE_ADD == 21 ~ "Suburban Large",
+      LOCALE_ADD == 22 ~ "Suburban Midsize",
+      LOCALE_ADD == 23 ~ "Suburban Small",
+      LOCALE_ADD == 31 ~ "Town Fringe",
+      LOCALE_ADD == 32 ~ "Town Distant",
+      LOCALE_ADD == 33 ~ "Town Remote",
+      LOCALE_ADD == 41 ~ "Rural Fringe",
+      LOCALE_ADD == 42 ~ "Rural Distant",
+      LOCALE_ADD == 43 ~ "Rural Remote",
+      LOCALE == 11 ~ "City Large",
+      LOCALE == 12 ~ "City Midsize",
+      LOCALE == 13 ~ "City Small",
+      LOCALE == 21 ~ "Suburban Large",
+      LOCALE == 22 ~ "Suburban Midsize",
+      LOCALE == 23 ~ "Suburban Small",
+      LOCALE == 31 ~ "Town Fringe",
+      LOCALE == 32 ~ "Town Distant",
+      LOCALE == 33 ~ "Town Remote",
+      LOCALE == 41 ~ "Rural Fringe",
+      LOCALE == 42 ~ "Rural Distant",
+      LOCALE == 43 ~ "Rural Remote"
+    )
+  )
+
+# Write to s3 bucket
+s3write_using(imls_erate,
+              FUN = write.csv,
+              bucket = "erate-data/data",
+              object = "imls_erate.csv")
+
+print("imls_erate written to s3")
+
+# Make a smaller dataset for use on Shiny dashboard
+erate_imls_compact <- erate_pls %>%
+  select(
+    ros_entity_number:original_allocation,
+    count_ros,
+    cat1_discount_by_ros_estimated,
+    cat2_discount_by_ros,
+    FSCSKEY,
+    FSCS_SEQ,
+    STABR,
+    LIBID,
+    LIBNAME,
+    ADDRESS,
+    CITY,
+    ZIP,
+    CNTY,
+    LATITUDE,
+    LONGITUD,
+    LOCALE,
+    LOCALE_ADD,
+    LOCALE_ADD_DESCR,
+    SQ_FEET,
+    MOST_RECENT_PLS
+  )
+
+# Write to s3 bucket
+s3write_using(
+  erate_imls_compact,
+  FUN = write.csv,
+  bucket = "erate-data/data",
+  object = "erate_imls_compact.csv"
+)
+
+print("erate_imls_compact written to s3")
+
+print(Sys.time())
+
+rm(list = ls())
