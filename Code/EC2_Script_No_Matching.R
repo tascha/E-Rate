@@ -23,7 +23,7 @@ library(aws.ec2metadata)
 # each five-year cycle beginning with the first budget cycle, which starts in FY2021 and ends in FY2025. 
 # filter the API call to applicant_types that include the word Library
 c2budget <- read.socrata(
-  "https://opendata.usac.org/resource/6brt-5pbv.csv?$where=starts_with(applicant_type,%20'Library')",
+  "https://opendata.usac.org/resource/6brt-5pbv.json?$where=starts_with(applicant_type,%20'Library')",
   app_token = Sys.getenv("USAC_Socrata")
 )
 
@@ -91,8 +91,8 @@ commitment_years <-
 # Gather category 1 commitment data for funded library recipients
 
 # Create two empty lists
-y = list()
-commit1 = list()
+filteredLibsCat1 = list()
+allLibsCat1 = list()
 
 # Loop through each funding year 
 # Gather commitments data filtering by the year in the loop, 
@@ -100,7 +100,8 @@ commit1 = list()
 # form_471_status_name equal to Committed,
 # form_471_frn_status_name equal to Funded
 for (i in 1:length(commitment_years)) {
-  y[[i]] <- read.socrata(
+  # Loop through each year gathering the data from the API
+  filteredLibsCat1[[i]] <- read.socrata(
     glue(
       "https://opendata.usac.org/resource/avi8-svp9.json?chosen_category_of_service=Category1&funding_year={commitment_years[i]}&form_471_status_name=Committed&form_471_frn_status_name=Funded"
     ),
@@ -108,36 +109,44 @@ for (i in 1:length(commitment_years)) {
     app_token = Sys.getenv("USAC_Socrata")
   )
   
-  if (dim(y[[i]])[2] == 0) {
+  # if no data was gathered (the length of the dataset is 0) just print empty and move to the next year
+  if (dim(filteredLibsCat1[[i]])[2] == 0) {
     print("empty")
-    }
+  }
+  
+  # if data exists in the gathered dataset, then start filtering
   else{
-    commit1[[i]] <- y[[i]] %>% 
-      # Note that this filter SHOULD NOT be done in the API call - we need all these rows for the next calculation
+    # the allLibsCat1 list will contain ALL the data for Library, Library System, and Consortium
+    # this is used later in the script in conjunction with disbursement data
+    allLibsCat1[[i]] <- filteredLibsCat1[[i]] %>% 
+      # Note that this org_entity_type_name filter SHOULD NOT be done in the API call 
       filter(organization_entity_type_name %in% c("Library", "Library System", "Consortium"))
     
-    y[[i]] <- y[[i]] %>%
+    # the filteredLibsCat1 list will contain the filtered and calculated data
+    filteredLibsCat1[[i]] <- filteredLibsCat1[[i]] %>%
       # Add a column indicating how many rows exist for a unique combo of billed entity no and 471 line item no
       # in other words how many recipients of the commitment will there be
+      # call this column count_ros
       add_count(billed_entity_number, form_471_line_item_number, name = "count_ros") %>%
-      # Add estimated amount received by individual recipient by calculating
+      # Add estimated amount received by individual recipients by dividing 
+      # post_discount_extended_eligible_line_item_costs by the count_ros 
+      # call this column cat1_discount_by_ros_estimated
       mutate(cat1_discount_by_ros_estimated = as.numeric(post_discount_extended_eligible_line_item_costs) /
                count_ros) %>%
-      
-      # Clean strings 
+      # clean text in certain columns - make lowercase and remove trailing spaces
       mutate(
         organization_entity_type_name = str_to_lower(str_trim(organization_entity_type_name, side = "both")),
         ros_entity_type = str_to_lower(str_trim(ros_entity_type, side = "both")),
         ros_entity_name = str_to_lower(str_trim(ros_entity_name, side = "both")),
         ros_subtype = str_to_lower(str_trim(ros_subtype, side = "both"))
       ) %>%
-      # Keep only ros_entity_type libraries and NIFs
+      # Keep only ros_entity_type libraries or NIFs
       filter(
         stringr::str_detect(ros_entity_type, "libr") |
           ros_entity_type == "non-instructional facility (nif)"
       ) %>%
-      # Keep ros_entity_type libraries AND
-      # Keep NIFs that have libr in the org_entity_type_name OR
+      # Keep ros_entity_type that contain 'libr' OR
+      # NIFs that have libr in the org_entity_type_name OR
       # NIFs that are part of consortia and have library in the name
       filter(
         str_detect(ros_entity_type, "libr") |
@@ -156,24 +165,32 @@ for (i in 1:length(commitment_years)) {
         )
       )
     # Write to s3 bucket
-    s3write_using(y[[i]],
+    s3write_using(filteredLibsCat1[[i]],
                   FUN = write.csv,
-                  bucket = "erate-data/data",
-                  object = glue("Libraries_Funded_Committed_AVI8-SVP9_Category1_{commitment_years[i]}.csv")
+                  bucket = "erate-data/data/AVI8-SVP9_Commitments",
+                  object = glue("{commitment_years[i]}_Libraries_Funded_Committed_Category_1.csv")
                   )
     print(glue("{commitment_years[i]} Cat 1 Libraries Funded Committed Written to S3"))    
   }
 }
 
-cat1_commitlist <- bind_rows(commit1)
-cat1_all_libs <- bind_rows(y)
+# Bind the yearly dataframes into larger dataframes
+cat1_commitlist <- bind_rows(allLibsCat1)
+cat1_all_libs <- bind_rows(filteredLibsCat1)
 
-q = list()
-commit2 = list()
+# Gather category 2 commitment data for funded library recipients
 
-# Call the API by each year for Category2 service
+# Create two empty lists
+filteredLibsCat2 = list()
+allLibsCat2 = list()
+
+# Loop through each funding year 
+# Gather commitments data filtering by the year in the loop, 
+# chosen_category_of_service equal to Category 2, 
+# form_471_status_name equal to Committed,
+# form_471_frn_status_name equal to Funded
 for (i in 1:length(commitment_years)) {
-  q[[i]] <- read.socrata(
+  filteredLibsCat2[[i]] <- read.socrata(
     glue(
       "https://opendata.usac.org/resource/avi8-svp9.json?chosen_category_of_service=Category2&funding_year={commitment_years[i]}&form_471_status_name=Committed&form_471_frn_status_name=Funded"
     ),
@@ -181,37 +198,44 @@ for (i in 1:length(commitment_years)) {
     app_token = Sys.getenv("USAC_Socrata")
   )
   
-  if (dim(y[[i]])[2] == 0) {
+  # if no data was gathered (the length of the dataset is 0) just print empty and move to the next year
+  if (dim(filteredLibsCat2[[i]])[2] == 0) {
     print("empty")
   }
+  
+  # if data exists in the gathered dataset, then start filtering
   else{
-    commit2[[i]] <- q[[i]] %>% 
-      # Note that this filter SHOULD NOT be done in the API call - we need all these rows for the next calculation
+    # the allLibsCat2 list will contain ALL the data for Library, Library System, and Consortium
+    # this is used later in the script in conjunction with disbursement data
+    allLibsCat2[[i]] <- filteredLibsCat2[[i]] %>% 
+      # Note that this org_entity_type_name filter SHOULD NOT be done in the API call 
       filter(organization_entity_type_name %in% c("Library", "Library System", "Consortium"))
     
-    q[[i]] <- q[[i]] %>%
+    # the filteredLibsCat2 list will contain the filtered and calculated data
+    filteredLibsCat2[[i]] <- filteredLibsCat2[[i]] %>%
       # Add a column indicating how many rows exist for a unique combo of billed entity no and 471 line item no
       # in other words how many recipients of the commitment will there be
+      # call this column count_ros
+      # (this might not be useful for Cat2 but we'll add it to be consistent with the Cat1 data)
       add_count(billed_entity_number, form_471_line_item_number, name = "count_ros") %>%
-      # Add estimated amount received by individual recipient by calculating
+      # Add estimated amount received by individual recipient by multiplying
+      # the discount percent (dis_pct) by original_allocation
+      # call this column cat2_discount_by_ros 
       mutate(cat2_discount_by_ros = as.numeric(original_allocation) * as.numeric(dis_pct)) %>%
-      
-      # clean strings
+      # clean text in certain columns - make lowercase and remove trailing spaces
       mutate(
         organization_entity_type_name = str_to_lower(str_trim(organization_entity_type_name, side = "both")),
         ros_entity_type = str_to_lower(str_trim(ros_entity_type, side = "both")),
         ros_entity_name = str_to_lower(str_trim(ros_entity_name, side = "both")),
         ros_subtype = str_to_lower(str_trim(ros_subtype, side = "both"))
       ) %>%
-      
       # Keep only ros_entity_type libraries and NIFs
       filter(
         stringr::str_detect(ros_entity_type, "libr") |
           ros_entity_type == "non-instructional facility (nif)"
       ) %>%
-      
-      # Keep ros_entity_type libraries AND
-      # Keep NIFs that have libr in the org_entity_type_name OR
+      # Keep ros_entity_type that contain 'libr' OR
+      # NIFs that have libr in the org_entity_type_name OR
       # NIFs that are part of consortia and have library in the name
       filter(
         str_detect(ros_entity_type, "libr") |
@@ -224,24 +248,27 @@ for (i in 1:length(commitment_years)) {
               organization_entity_type_name == "consortium" &
               str_detect(ros_entity_name, "libr")
           ),
-        
         # Keep ros_subtypes that are null or NOT public schools
         (
           is.na(ros_subtype) | !str_detect(ros_subtype, "public school")
         )
       )
     # Write to s3 bucket
-    s3write_using(y[[i]],
+    s3write_using(filteredLibsCat2[[i]],
                   FUN = write.csv,
-                  bucket = "erate-data/data",
-                  object = glue("Libraries_Funded_Committed_AVI8-SVP9_Category2_{commitment_years[i]}.csv")
+                  bucket = "erate-data/data/AVI8-SVP9_Commitments",
+                  object = glue("{commitment_years[i]}_Libraries_Funded_Committed_Category_2.csv")
     )
     print(glue("{commitment_years[i]} Cat 2 Libraries Funded Committed Written to S3"))   
   }
 }
 
-cat2_commitlist <- bind_rows(commit2)
-cat2_all_libs <- bind_rows(q)
+# Bind the yearly dataframes into larger dataframes
+cat2_commitlist <- bind_rows(allLibsCat2)
+cat2_all_libs <- bind_rows(filteredLibsCat2)
+
+
+
 
 erate_libs <- bind_rows(cat1_all_libs, cat2_all_libs)
 
