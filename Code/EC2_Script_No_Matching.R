@@ -38,49 +38,6 @@ print("c2budget dataset written to s3")
 # Remove the dataset from memory
 rm(c2budget)
 
-# Gather the full list of funding years available in the qdmp-ygft dataset and create a list
-# This done with a select distinct query from the API
-disbursement_years <-
-  read.csv(
-    "https://opendata.usac.org/resource/qdmp-ygft.csv?$select=distinct%20funding_year"
-  )[[1]]
-
-disb = list()
-# Loop through each available funding year and create a dataset of Funded application disbursements
-for (i in 1:length(disbursement_years)) {
-  disb[[i]] <- read.socrata(
-    glue(
-      "https://opendata.usac.org/resource/qdmp-ygft.json?form_471_frn_status_name=Funded&funding_year={disbursement_years[i]}"
-    ),
-    # Parameters: Status equals Funded, year equals year in loop
-    app_token = Sys.getenv("USAC_Socrata")
-  )
-  
-  # Write each year's data to s3 bucket
-  s3write_using(disb[[i]],
-                FUN = write.csv,
-                bucket = "erate-data/data/QDMP-YGFT_Disbursements",
-                object = glue("{disbursement_years[i]}_Funded_Disbursements.csv"))
-  
-  print(glue("{disbursement_years[i]}_Funded_Disbursements written to S3"))
-}
-
-# Combine each of the years into one big dataset
-full_disbursements <- bind_rows(disb)
-
-# Remove the list of dataframes called disb
-rm(disb)
-
-# Write the big Funded_Disbursement dataset to s3
-s3write_using(full_disbursements,
-              FUN = write.csv,
-              bucket = "erate-data/data/QDMP-YGFT_Disbursements",
-              object = "Full_Funded_Disbursements.csv")
-
-print("Full_Funded_Disbursements written to s3")
-
-# Don't remove Full_Funded_Disbursements yet - needed later on
-
 # Gather the full list of years available in the dataset and create a list
 # This done with a select distinct query from the API
 commitment_years <-
@@ -175,8 +132,8 @@ for (i in 1:length(commitment_years)) {
 }
 
 # Bind the yearly dataframes into larger dataframes
-cat1_commitlist <- bind_rows(allLibsCat1)
-cat1_all_libs <- bind_rows(filteredLibsCat1)
+cat1_libs_consortia <- bind_rows(allLibsCat1)
+cat1_filtered_libs <- bind_rows(filteredLibsCat1)
 
 # Gather category 2 commitment data for funded library recipients
 
@@ -264,37 +221,73 @@ for (i in 1:length(commitment_years)) {
 }
 
 # Bind the yearly dataframes into larger dataframes
-cat2_commitlist <- bind_rows(allLibsCat2)
-cat2_all_libs <- bind_rows(filteredLibsCat2)
+cat2_libs_consortia <- bind_rows(allLibsCat2)
+cat2_filtered_libs <- bind_rows(filteredLibsCat2)
 
-
-
-
-erate_libs <- bind_rows(cat1_all_libs, cat2_all_libs)
-
-disbursement_merge <- bind_rows(cat1_commitlist, cat2_commitlist)
+# Combine the cat1 and cat 2 data into a large dataframe
+erate_libs <- bind_rows(cat1_filtered_libs, cat2_filtered_libs)
 
 # Write to s3 bucket
 s3write_using(erate_libs,
               FUN = write.csv,
-              bucket = "erate-data/data",
+              bucket = "erate-data/data/AVI8-SVP9_Commitments",
               object = "Libraries_Funded_Committed_AVI8-SVP9.csv")
 
 print("erate_libs dataset written to s3")
 
-# Write to s3 bucket
-s3write_using(
-  disbursement_merge,
-  FUN = write.csv,
-  bucket = "erate-data/data",
-  object = "Data_for_Disbursement_Merge.csv"
-)
+# remove some dataframes that are no longer needed to save space
+rm(cat1_filtered_libs, cat2_filtered_libs)
 
-print("Data_for_Disbursement_Merge written to s3")
+# remove some lists that are no longer needed to save space
+rm(allLibsCat1, allLibsCat2, commitCat1, filteredLibsCat1, filteredLibsCat2)
 
-# Create a dataset of funding request numbers that shows how much was requested, how much was disbursed,
+# Gather the full list of funding years available in the qdmp-ygft dataset and create a list
+# This done with a select distinct query from the API
+disbursement_years <-
+  read.csv(
+    "https://opendata.usac.org/resource/qdmp-ygft.csv?$select=distinct%20funding_year"
+  )[[1]]
+
+disb = list()
+# Loop through each available funding year and create a dataset of Funded application disbursements
+for (i in 1:length(disbursement_years)) {
+  disb[[i]] <- read.socrata(
+    glue(
+      "https://opendata.usac.org/resource/qdmp-ygft.json?form_471_frn_status_name=Funded&funding_year={disbursement_years[i]}"
+    ),
+    # Parameters: Status equals Funded, year equals year in loop
+    app_token = Sys.getenv("USAC_Socrata")
+  )
+  
+  # Write each year's data to s3 bucket
+  s3write_using(disb[[i]],
+                FUN = write.csv,
+                bucket = "erate-data/data/QDMP-YGFT_Disbursements",
+                object = glue("{disbursement_years[i]}_Funded_Disbursements.csv"))
+  
+  print(glue("{disbursement_years[i]}_Funded_Disbursements written to S3"))
+}
+
+# Combine each of the years into one big dataset
+full_disbursements <- bind_rows(disb)
+
+# Remove the list of dataframes called disb
+rm(disb)
+
+# Write the big Funded_Disbursement dataset to s3
+s3write_using(full_disbursements,
+              FUN = write.csv,
+              bucket = "erate-data/data/QDMP-YGFT_Disbursements",
+              object = "Full_Funded_Disbursements.csv")
+
+print("Full_Funded_Disbursements written to s3")
+
+# create a datafrome of the full libraries and consortia datasets (not filtered down to recipients)
+disbursement_merge <- bind_rows(cat1_libs_consortia, cat2_libs_consortia)
+
+# Create a dataframe of funding request numbers that shows how much was requested, how much was disbursed,
 # and the percentage of the request that was disbursed
-disbursement_merged <- disbursement_merge %>%
+disbursement_stats <- disbursement_merge %>%
   distinct(funding_request_number,
            form_471_line_item_number,
            .keep_all = T) %>%
@@ -324,18 +317,17 @@ disbursement_merged <- disbursement_merge %>%
     pct_of_committed_received = total_authorized_disbursement / post_discount_extended_eligible_line_item_costs_sum
   )
 
-
 # Write to s3 bucket
 s3write_using(
-  disbursement_merged,
+  disbursement_stats,
   FUN = write.csv,
-  bucket = "erate-data/data",
-  object = "Disbursement_Merged.csv"
+  bucket = "erate-data/data/USAC_Tables_Merged",
+  object = "Commitments_AVI8-SVP9_and_Disbursements_QDMP-YGFT.csv"
 )
 
-print("disbursement_merged dataset written to s3")
+print("disbursement_stats dataset written to s3")
 
-rm(disbursement_merge, disbursement, disbursement_merged)
+rm(disbursement_merge, disbursement, disbursement_stats)
 
 # Read in IMLS PLS datasets stored in S3
 imls_2014to2020 <-
