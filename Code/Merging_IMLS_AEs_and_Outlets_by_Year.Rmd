@@ -1,0 +1,367 @@
+---
+title: "Merging IMLS PLSs AEs with Outlets"
+output: html_notebook
+---
+
+```{r}
+# Load libraries
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(glue)
+library(purrr)
+library(janitor)
+library(rqdatatable)
+library(data.table)
+library(aws.s3)
+library(aws.ec2metadata)
+```
+
+```{r}
+# Read in IMLS PLS datasets stored in S3
+imls_outlets_2014 <-
+  s3read_using(FUN = read.csv,
+               object = "2014_IMLS_PLS_OUTLET.csv",
+               bucket = "erate-data/data/IMLS_PLS")
+imls_ae_2014 <-
+  s3read_using(FUN = read.csv,
+               object = "2014_IMLS_PLS_AE.csv",
+               bucket = "erate-data/data/IMLS_PLS")
+```
+
+```{r}
+# Read in IMLS PLS datasets stored in S3
+imls_outlets_2015 <-
+  s3read_using(FUN = read.csv,
+               object = "2015_IMLS_PLS_OUTLET.csv",
+               bucket = "erate-data/data/IMLS_PLS")
+imls_ae_2015 <-
+  s3read_using(FUN = read.csv,
+               object = "2015_IMLS_PLS_AE.csv",
+               bucket = "erate-data/data/IMLS_PLS")
+```
+
+```{r}
+# Read in IMLS PLS datasets stored in S3
+imls_outlets_2016 <-
+  s3read_using(FUN = read.csv,
+               object = "2016_IMLS_PLS_OUTLET.csv",
+               bucket = "erate-data/data/IMLS_PLS")
+imls_ae_2016 <-
+  s3read_using(FUN = read.csv,
+               object = "2016_IMLS_PLS_AE.csv",
+               bucket = "erate-data/data/IMLS_PLS")
+```
+
+```{r}
+# Read in IMLS PLS datasets stored in S3
+imls_outlets_2017 <-
+  s3read_using(FUN = read.csv,
+               object = "2017_IMLS_PLS_OUTLET.csv",
+               bucket = "erate-data/data/IMLS_PLS")
+imls_ae_2017 <-
+  s3read_using(FUN = read.csv,
+               object = "2017_IMLS_PLS_AE.csv",
+               bucket = "erate-data/data/IMLS_PLS")
+```
+
+```{r}
+# Read in IMLS PLS datasets stored in S3
+imls_outlets_2018 <-
+  s3read_using(FUN = read.csv,
+               object = "2018_IMLS_PLS_OUTLET.csv",
+               bucket = "erate-data/data/IMLS_PLS")
+imls_ae_2018 <-
+  s3read_using(FUN = read.csv,
+               object = "2018_IMLS_PLS_AE.csv",
+               bucket = "erate-data/data/IMLS_PLS")
+```
+
+```{r}
+# Read in IMLS PLS datasets stored in S3
+imls_outlets_2019 <-
+  s3read_using(FUN = read.csv,
+               object = "2019_IMLS_PLS_OUTLET.csv",
+               bucket = "erate-data/data/IMLS_PLS")
+imls_ae_2019 <-
+  s3read_using(FUN = read.csv,
+               object = "2019_IMLS_PLS_AE.csv",
+               bucket = "erate-data/data/IMLS_PLS")
+```
+
+```{r}
+# Read in IMLS PLS datasets stored in S3
+imls_outlets_2020 <-
+  s3read_using(FUN = read.csv,
+               object = "2020_IMLS_PLS_OUTLET.csv",
+               bucket = "erate-data/data/IMLS_PLS")
+imls_ae_2020 <-
+  s3read_using(FUN = read.csv,
+               object = "2020_IMLS_PLS_AE.csv",
+               bucket = "erate-data/data/IMLS_PLS")
+```
+
+```{r}
+# Make Lists of the dataframes for looping
+aes <- list(imls_ae_2014,imls_ae_2015,imls_ae_2016,imls_ae_2017,imls_ae_2018,imls_ae_2019,imls_ae_2020)
+outlets <- list(imls_outlets_2014,imls_outlets_2015,imls_outlets_2016,imls_outlets_2017,imls_outlets_2018,imls_outlets_2019,imls_outlets_2020)
+```
+
+```{r}
+# Loop through each year's outlets dataframes and make the smaller (just FSCS and year)
+# full_imls dataset for each individual year
+
+# Set starting year for loop
+year = 2014
+
+all_outlets_1 <- list()
+
+for (i in 1:length(outlets)) {
+  all_outlets_1[[i]] <- outlets[[i]] %>%
+    select(FSCSKEY, FSCS_SEQ) %>% 
+    mutate(PLS_YEAR = year)
+  
+  year <- year + 1
+}
+
+# Make the list of dataframes into a full dataframe by binding the rows
+outletsFSCS_20142020 <- data.table::rbindlist(all_outlets_1, use.names = TRUE, fill = TRUE)
+```
+
+```{r}
+# Loop through each year's dataframes and make the larger (joining back in the other variables)
+# full_imls dataset for each individual year
+
+# Set starting year for loop
+year = 2014
+
+all_outlets_2 <- list()
+
+for (i in 1:length(outlets)) {
+  all_outlets_2[[i]] <- outletsFSCS_20142020 %>% 
+    filter(PLS_YEAR == year) %>% 
+    left_join(outlets[[i]],
+              by = c("FSCSKEY", "FSCS_SEQ"))
+
+  year <- year + 1
+}
+
+# Make the list of dataframes into a full dataframe by binding the rows
+outlets_20142020 <- data.table::rbindlist(all_outlets_2, use.names = TRUE, fill = TRUE)
+```
+
+```{r}
+# we can remove some of the temporary dataframes we created
+rm(outletsFSCS_20142020, all_outlets_1, all_outlets_2)
+```
+
+```{r}
+# Here we will make a full dataframe and add FSCS_SEQ codes where an AE is also an Outlet
+
+# Set starting year for loop
+year = 2014
+
+all_aes_with_FSCS_SEQ <- list()
+
+for (i in 1:length(aes)) {
+   admin_not_sep <- aes[[i]] %>%
+     # Keep only those where admin offices are NOT separate
+    filter(C_ADMIN != "MA") %>% 
+    select(FSCSKEY, LIBNAME, ZIP) %>% 
+    rquery::natural_join(
+      outlets[[i]] %>%
+        # Use only Central Libraries
+        filter(C_OUT_TY == "CE") %>% 
+        select(FSCSKEY, FSCS_SEQ, LIBNAME, ZIP),
+      by = c("FSCSKEY", "ZIP"),
+      jointype = "LEFT"
+    )
+   
+   all_aes <- aes[[i]] %>%
+     # if admin office is separate, assign it an FSCS_SEQ of 999, otherwise NA
+     # No filtering - this is the whole dataset
+     mutate(FSCS_SEQ = ifelse(C_ADMIN == "MA", 999, NA)) %>%
+     # Add column for PLS Year
+     mutate(PLS_YEAR = year) %>% 
+     rquery::natural_join(
+       admin_not_sep %>%
+         select(FSCSKEY, FSCS_SEQ),
+       by = c("FSCSKEY"),
+       jointype = "LEFT"
+       )
+   
+   # This is attempting to catch bookmobiles listed as AEs   
+   bookmobiles <- all_aes %>%
+     # Keep only those where there's a single outlet and the FSCS_SEQ should then be NA
+    filter(C_ADMIN == "SO" & is.na(FSCS_SEQ)) %>% 
+    select(FSCSKEY, LIBNAME) %>% 
+    rquery::natural_join(
+      outlets[[i]] %>%
+        # Use only bookmobiles
+        filter(C_OUT_TY == "BS") %>% 
+        select(FSCSKEY, FSCS_SEQ, LIBNAME),
+      by = c("FSCSKEY"),
+      jointype = "LEFT"
+    )
+   
+   # Add in the info from bookmobiles to the all_aes
+   all_aes  <- all_aes %>% 
+     rquery::natural_join(
+       bookmobiles %>%
+         select(FSCSKEY, FSCS_SEQ),
+       by = c("FSCSKEY"),
+       jointype = "LEFT"
+       )
+   
+   so_not_bookmobile <- all_aes %>%
+     # Keep only those where there's a single outlet and hasn't matched with a bookmobile
+    filter(C_ADMIN == "SO" & is.na(FSCS_SEQ)) %>% 
+    select(FSCSKEY, LIBNAME) %>% 
+    rquery::natural_join(
+      outlets[[i]] %>%
+        # Use only central libs
+        filter(C_OUT_TY == "CE") %>% 
+        select(FSCSKEY, FSCS_SEQ, LIBNAME),
+      by = c("FSCSKEY"),
+      jointype = "LEFT"
+    )
+   
+   # Add in the Single Outlet Not Bookmobiles info to all_aes
+   all_aes <- all_aes %>% 
+     rquery::natural_join(
+       so_not_bookmobile %>%
+         select(FSCSKEY, FSCS_SEQ),
+       by = c("FSCSKEY"),
+       jointype = "LEFT"
+       )
+   
+   # Reassign to new dataframe in list
+   all_aes_with_FSCS_SEQ[[i]] <- all_aes
+  
+  year <- year + 1
+}
+
+# Make the list of dataframes into a full dataframe by binding the rows
+aes_20142020 <- data.table::rbindlist(all_aes_with_FSCS_SEQ, use.names = TRUE, fill = TRUE)
+```
+
+```{r}
+# Get the full list from outlets and aes of FSCSKEY, FSCS_SEQ, PLS_YEAR
+aes_and_outlets_20142020 <- aes_20142020 %>% 
+  select(FSCSKEY, FSCS_SEQ, PLS_YEAR) %>% 
+  rquery::natural_join(outlets_20142020 %>% 
+                         select(FSCSKEY, FSCS_SEQ, PLS_YEAR),
+                       by = c("FSCSKEY", "FSCS_SEQ", "PLS_YEAR"),
+                       jointype = "FULL")
+```
+
+```{r}
+# Write to s3 bucket
+s3write_using(aes_and_outlets_20142020,
+              FUN = write.csv,
+              row.names = F,
+              bucket = "erate-data/data/IMLS_PLS",
+              object = "2014-2020_FSCS_Codes_and_Years.csv")
+```
+
+```{r}
+# Write to Github 
+write.csv(aes_and_outlets_20142020, "~/Documents/GitHub/E-Rate/Data/2014-2020_FSCS_Codes_and_Years.csv", row.names = F)
+```
+
+```{r}
+# Combine all the data but don't create duplicates for any given year
+
+# Set starting year for loop
+year = 2014
+
+all_all <- list()
+
+for (i in 1:length(aes)) {
+  ae_only <- aes_and_outlets_20142020 %>%
+    filter(PLS_YEAR == year) %>% 
+    filter(is.na(FSCS_SEQ) | FSCS_SEQ == 999) %>% 
+    left_join(aes[[i]] %>% 
+                mutate(FSCS_SEQ = ifelse(C_ADMIN == "MA", 999, NA)),
+              by = c("FSCSKEY", "FSCS_SEQ")) %>% 
+    mutate(PHONE = as.character(PHONE)) %>% 
+    # across applies a function to multiple columns
+    mutate(across(any_of(c("LOCALE", "LOCALE_ADD", "CDCODE")), as.numeric))
+  
+  outlet_only <- aes_and_outlets_20142020 %>% 
+    filter(PLS_YEAR == year) %>% 
+    filter(!is.na(FSCS_SEQ) & FSCS_SEQ != 999) %>% 
+    left_join(outlets[[i]] %>% 
+                # Remove INCITSCO and INCITSST columns if they exist
+                select_if(!names(.) %in% c('INCITSCO', 'INCITSST')),
+              by = c("FSCSKEY", "FSCS_SEQ")) %>% 
+    mutate(PHONE = as.character(PHONE)) %>% 
+    mutate(across(any_of(c("LOCALE", "LOCALE_ADD", "CDCODE")), as.numeric))
+  
+  all_all[[i]] <- bind_rows(ae_only, outlet_only)
+  
+  year <- year + 1
+}
+
+everything <- data.table::rbindlist(all_all, use.names = TRUE, fill = TRUE)
+```
+
+```{r}
+# Write to s3 bucket
+s3write_using(everything,
+              FUN = write.csv,
+              row.names = F,
+              bucket = "erate-data/data/IMLS_PLS",
+              object = "2014-2020_OUTLETs_and_AEs_Merged.csv")
+```
+
+```{r}
+# Write to Github 
+write.csv(everything, "~/Documents/GitHub/E-Rate/Data/2014-2020_OUTLETs_and_AEs_Merged.csv", row.names = F)
+```
+
+```{r}
+# Make a df of all unique libraries and the most recent year they were included in the PLS
+
+no_dupes <- everything %>% 
+  select(FSCSKEY, FSCS_SEQ, LIBID, LIBNAME, ADDRESS, CITY, STABR, ZIP, C_ADMIN, C_OUT_TY, LATITUDE, LONGITUD, PLS_YEAR) %>% 
+  group_by(FSCSKEY, FSCS_SEQ) %>% 
+  slice_max(PLS_YEAR) %>%
+  ungroup() %>%
+  group_by(FSCSKEY, LIBNAME, CITY, C_OUT_TY) %>%
+  add_count() %>%
+  filter(n==1)
+
+dupes <- everything %>% 
+  select(FSCSKEY, FSCS_SEQ, LIBID, LIBNAME, ADDRESS, CITY, STABR, ZIP, C_ADMIN, C_OUT_TY, LATITUDE, LONGITUD, PLS_YEAR) %>% 
+  group_by(FSCSKEY, FSCS_SEQ) %>% 
+  slice_max(PLS_YEAR) %>%
+  ungroup() %>%
+  group_by(FSCSKEY, LIBNAME, CITY, C_OUT_TY) %>%
+  add_count() %>%
+  filter(n>1) %>% 
+  ungroup() %>% 
+  group_by(FSCSKEY, LIBNAME, CITY, C_OUT_TY) %>%
+  slice_max(PLS_YEAR)
+
+mega_imls_unique <- rbind(no_dupes, dupes)
+
+# Remove the n column and rename the PLS_YEAR column
+mega_imls_unique <- mega_imls_unique %>% 
+  select(-n) %>% 
+  rename(MOST_RECENT_PLS_YEAR=PLS_YEAR)
+```
+
+```{r}
+# Write to s3 bucket
+s3write_using(mega_imls_unique,
+              FUN = write.csv,
+              row.names = F,
+              bucket = "erate-data/data/IMLS_PLS",
+              object = "2014-2020_All_Unique_Entities_Most_Recent_PLS.csv")
+```
+
+```{r}
+# Write to Github 
+write.csv(everything, "~/Documents/GitHub/E-Rate/Data/2014-2020_All_Unique_Entities_Most_Recent_PLS.csv", row.names = F)
+```
