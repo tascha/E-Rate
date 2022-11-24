@@ -30,6 +30,7 @@ c2budget <- read.socrata(
 # Write to s3 bucket
 s3write_using(c2budget,
               FUN = write.csv,
+              row.names = F,
               bucket = "erate-data/data/6BRT-5PBV_Cat2Budgets",
               object = "Category_2_Budgets_2021-2025_6BRT-5PBV.csv")
 
@@ -124,6 +125,7 @@ for (i in 1:length(commitment_years)) {
     # Write to s3 bucket
     s3write_using(filteredLibsCat1[[i]],
                   FUN = write.csv,
+                  row.names = F,
                   bucket = "erate-data/data/AVI8-SVP9_Commitments",
                   object = glue("{commitment_years[i]}_Libraries_Funded_Committed_Category_1.csv")
                   )
@@ -213,6 +215,7 @@ for (i in 1:length(commitment_years)) {
     # Write to s3 bucket
     s3write_using(filteredLibsCat2[[i]],
                   FUN = write.csv,
+                  row.names = F,
                   bucket = "erate-data/data/AVI8-SVP9_Commitments",
                   object = glue("{commitment_years[i]}_Libraries_Funded_Committed_Category_2.csv")
     )
@@ -230,6 +233,7 @@ erate_libs <- bind_rows(cat1_filtered_libs, cat2_filtered_libs)
 # Write to s3 bucket
 s3write_using(erate_libs,
               FUN = write.csv,
+              row.names = F,
               bucket = "erate-data/data/AVI8-SVP9_Commitments",
               object = "Libraries_Funded_Committed_AVI8-SVP9.csv")
 
@@ -262,6 +266,7 @@ for (i in 1:length(disbursement_years)) {
   # Write each year's data to s3 bucket
   s3write_using(disb[[i]],
                 FUN = write.csv,
+                row.names = F,
                 bucket = "erate-data/data/QDMP-YGFT_Disbursements",
                 object = glue("{disbursement_years[i]}_Funded_Disbursements.csv"))
   
@@ -277,6 +282,7 @@ rm(disb)
 # Write the big Funded_Disbursement dataset to s3
 s3write_using(full_disbursements,
               FUN = write.csv,
+              row.names = F,
               bucket = "erate-data/data/QDMP-YGFT_Disbursements",
               object = "Full_Funded_Disbursements.csv")
 
@@ -321,6 +327,7 @@ disbursement_stats <- disbursement_merge %>%
 s3write_using(
   disbursement_stats,
   FUN = write.csv,
+  row.names = F,
   bucket = "erate-data/data/USAC_Tables_Merged",
   object = "Commitments_AVI8-SVP9_and_Disbursements_QDMP-YGFT.csv"
 )
@@ -361,6 +368,7 @@ erate_libs <- erate_libs %>%
 # Write to s3 bucket
 s3write_using(erate_libs,
               FUN = write.csv,
+              row.names = F,
               bucket = "erate-data/data",
               object = "Libraries_Funded_Committed_AVI8-SVP9_with_FSCS_Matches.csv")
 
@@ -427,6 +435,7 @@ erate_pls <- erate_pls %>%
 # Write to s3 bucket
 s3write_using(erate_pls,
               FUN = write.csv,
+              row.names = F,
               bucket = "erate-data/data",
               object = "erate_imls.csv")
 
@@ -473,6 +482,7 @@ imls_erate <- imls_2014to2020 %>%
 # Write to s3 bucket
 s3write_using(imls_erate,
               FUN = write.csv,
+              row.names = F,
               bucket = "erate-data/data",
               object = "imls_erate.csv")
 
@@ -507,6 +517,7 @@ erate_imls_compact <- erate_pls %>%
 s3write_using(
   erate_imls_compact,
   FUN = write.csv,
+  row.names = F,
   bucket = "erate-data/data",
   object = "erate_imls_compact.csv"
 )
