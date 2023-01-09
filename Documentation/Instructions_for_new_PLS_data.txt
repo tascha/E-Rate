@@ -1,0 +1,19 @@
+When a new Public Library Survey (PLS) dataset becomes available, follow these steps:
+
+1. Rename the comma-separated-values (CSV) data files as follows:
+  {Year}_IMLS_PLS_AE.csv (e.g. 2045_IMLS_PLS_AE.csv)
+  {Year}_IMLS_PLS_OUTLET.csv (e.g. 2045_IMLS_PLS_OUTLET.csv)
+  {Year}_IMLS_PLS_STATE.csv (e.g. 2045_IMLS_PLS_STATE.csv)
+2. Add the datasets to the AWS s3 bucket: s3://erate-data/data/IMLS_PLS/ 
+3. Update the code in the rmd file called "Merging_IMLS_AEs_and_Outlets_by_Year.Rmd" (https://github.com/tascha/E-Rate/blob/main/Code/Merging_IMLS_AEs_and_Outlets_by_Year.Rmd). This will require reading through the whole script as small changes will be needed throughout.
+  a. add code to read in the newest datasets for PLS Outlets and AEs 
+  b. add the new dataframes to the list of dataframes used throughout the merge script
+  c. rename dataframes and output files to include the new year (e.g. 2014-2045_All_Unique_Entities_Most_Recent_PLS.csv")
+  d. run the updated code
+4. Update the code in the R script called "USAC_PLS_Matching_Script.R" (https://github.com/tascha/E-Rate/blob/main/Code/USAC_PLS_Matching_Script.R)
+  a. Update the name of the data file that is read in to make the dataframe called "IMLS". This is the same file that was created after running step 3.
+  b. run the updated code
+5. Update the code in the R script called "EC2_Script_No_Matching.R" (https://github.com/tascha/E-Rate/blob/main/Code/EC2_Script_No_Matching.R)
+  a. Update the name of the data file (and do a find/replace for the dataframe name) that is read in to make the dataframe called "imls_2014to{EndYear}".
+  b. Replace the code on the EC2 instance with the updated code created in this step.
+6. Check the dashboard once step 5 has been run and make sure the newest data is appearing
