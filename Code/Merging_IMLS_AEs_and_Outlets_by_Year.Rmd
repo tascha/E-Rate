@@ -118,36 +118,56 @@ all_outlets_1 <- list()
 
 for (i in 1:length(outlets)) {
   all_outlets_1[[i]] <- outlets[[i]] %>%
-    select(FSCSKEY, FSCS_SEQ) %>% 
     mutate(PLS_YEAR = year)
   
   year <- year + 1
 }
 
 # Make the list of dataframes into a full dataframe by binding the rows
-outletsFSCS_20142020 <- data.table::rbindlist(all_outlets_1, use.names = TRUE, fill = TRUE)
+outlets_20142020 <- data.table::rbindlist(all_outlets_1, use.names = TRUE, fill = TRUE)
 ```
 
 ```{r}
-# Loop through each year's dataframes and make the larger (joining back in the other variables)
-# full_imls dataset for each individual year
+# # Loop through each year's outlets dataframes and make the smaller (just FSCS and year)
+# # full_imls dataset for each individual year
+# 
+# # Set starting year for loop
+# year = 2014
+# 
+# all_outlets_1 <- list()
+# 
+# for (i in 1:length(outlets)) {
+#   all_outlets_1[[i]] <- outlets[[i]] %>%
+#     select(FSCSKEY, FSCS_SEQ) %>% 
+#     mutate(PLS_YEAR = year)
+#   
+#   year <- year + 1
+# }
+# 
+# # Make the list of dataframes into a full dataframe by binding the rows
+# outletsFSCS_20142020 <- data.table::rbindlist(all_outlets_1, use.names = TRUE, fill = TRUE)
+```
 
-# Set starting year for loop
-year = 2014
-
-all_outlets_2 <- list()
-
-for (i in 1:length(outlets)) {
-  all_outlets_2[[i]] <- outletsFSCS_20142020 %>% 
-    filter(PLS_YEAR == year) %>% 
-    left_join(outlets[[i]],
-              by = c("FSCSKEY", "FSCS_SEQ"))
-
-  year <- year + 1
-}
-
-# Make the list of dataframes into a full dataframe by binding the rows
-outlets_20142020 <- data.table::rbindlist(all_outlets_2, use.names = TRUE, fill = TRUE)
+```{r}
+# # Loop through each year's dataframes and make the larger (joining back in the other variables)
+# # full_imls dataset for each individual year
+# 
+# # Set starting year for loop
+# year = 2014
+# 
+# all_outlets_2 <- list()
+# 
+# for (i in 1:length(outlets)) {
+#   all_outlets_2[[i]] <- outletsFSCS_20142020 %>% 
+#     filter(PLS_YEAR == year) %>% 
+#     left_join(outlets[[i]],
+#               by = c("FSCSKEY", "FSCS_SEQ"))
+# 
+#   year <- year + 1
+# }
+# 
+# # Make the list of dataframes into a full dataframe by binding the rows
+# outlets_20142020 <- data.table::rbindlist(all_outlets_2, use.names = TRUE, fill = TRUE)
 ```
 
 ```{r}
@@ -168,6 +188,8 @@ for (i in 1:length(aes)) {
      # Keep only those where admin offices are NOT separate
     filter(C_ADMIN != "MA") %>% 
     select(FSCSKEY, LIBNAME, ZIP) %>% 
+    # Join on FSCSKEY and zip code with outlets data where the outlet is a central library 
+    # this is an assumption that the central library will match the AE that is also an admin office
     rquery::natural_join(
       outlets[[i]] %>%
         # Use only Central Libraries
@@ -183,6 +205,7 @@ for (i in 1:length(aes)) {
      mutate(FSCS_SEQ = ifelse(C_ADMIN == "MA", 999, NA)) %>%
      # Add column for PLS Year
      mutate(PLS_YEAR = year) %>% 
+     # Now add in the FSCS_SEQ codes we gathered in the previous code chunk
      rquery::natural_join(
        admin_not_sep %>%
          select(FSCSKEY, FSCS_SEQ),
@@ -192,9 +215,10 @@ for (i in 1:length(aes)) {
    
    # This is attempting to catch bookmobiles listed as AEs   
    bookmobiles <- all_aes %>%
-     # Keep only those where there's a single outlet and the FSCS_SEQ should then be NA
+    # Keep only those where there's a single outlet and the FSCS_SEQ should then be NA
     filter(C_ADMIN == "SO" & is.na(FSCS_SEQ)) %>% 
     select(FSCSKEY, LIBNAME) %>% 
+    # Join with outlets data where the outlet is a bookmobile
     rquery::natural_join(
       outlets[[i]] %>%
         # Use only bookmobiles
@@ -216,7 +240,9 @@ for (i in 1:length(aes)) {
    so_not_bookmobile <- all_aes %>%
      # Keep only those where there's a single outlet and hasn't matched with a bookmobile
     filter(C_ADMIN == "SO" & is.na(FSCS_SEQ)) %>% 
-    select(FSCSKEY, LIBNAME) %>% 
+    select(FSCSKEY, LIBNAME) %>%
+     # This is an assumption that the remaining ones are probably central libraries 
+     # join with outlets that are central libraries
     rquery::natural_join(
       outlets[[i]] %>%
         # Use only central libs
@@ -243,6 +269,9 @@ for (i in 1:length(aes)) {
 
 # Make the list of dataframes into a full dataframe by binding the rows
 aes_20142020 <- data.table::rbindlist(all_aes_with_FSCS_SEQ, use.names = TRUE, fill = TRUE)
+
+# Rearrange columns for easier browsing
+aes_20142020 <- aes_20142020 %>% relocate(c("FSCS_SEQ", "PLS_YEAR"), .after = FSCSKEY)
 ```
 
 ```{r}

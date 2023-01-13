@@ -243,7 +243,7 @@ print("erate_libs dataset written to s3")
 rm(cat1_filtered_libs, cat2_filtered_libs)
 
 # remove some lists that are no longer needed to save space
-rm(allLibsCat1, allLibsCat2, commitCat1, filteredLibsCat1, filteredLibsCat2)
+rm(allLibsCat1, allLibsCat2, filteredLibsCat1, filteredLibsCat2)
 
 # Gather the full list of funding years available in the qdmp-ygft dataset and create a list
 # This done with a select distinct query from the API
@@ -308,7 +308,7 @@ disbursement_stats <- disbursement_merge %>%
       sum(post_discount_extended_eligible_line_item_costs)
   ) %>%
   left_join(
-    disbursement %>%
+    full_disbursements %>%
       select(
         funding_request_number,
         funding_commitment_request,
@@ -339,23 +339,21 @@ rm(disbursement_merge, disbursement, disbursement_stats)
 # Read in IMLS PLS datasets stored in S3
 imls_2014to2020 <-
   s3read_using(FUN = read.csv,
-               object = "data/IMLS_PLS_AEandOUTLETS_merged_2014-2020.csv",
-               bucket = "erate-data")
-imls_2014to2020 <- imls_2014to2020 %>% 
-  select(-X)
+               object = "2014-2020_OUTLETs_and_AEs_Merged.csv",
+               bucket = "erate-data/data/IMLS_PLS")
 
 # Import matches which were done in a separate script run manually
 matches <-
   s3read_using(
     FUN = read.csv,
     na.strings = c("", " ", "N/A", "n/a"),
-    object = "data/USAC_IMLS_MATCHED.csv",
-    bucket = "erate-data"
+    object = "USAC_IMLS_MATCHED.csv",
+    bucket = "erate-data/data/USAC_IMLS_Match"
   )
 
+# Change REN to numeric data type
 matches <- matches %>% 
-  mutate(ros_entity_number = as.numeric(ros_entity_number)) %>% 
-  select(-X)
+  mutate(ros_entity_number = as.numeric(ros_entity_number))
 
 # I'm now going to add FSCSKEY and FSCS_SEQ columns to erate_libs dataset and include the matches
 erate_libs <- erate_libs %>%
@@ -369,7 +367,7 @@ erate_libs <- erate_libs %>%
 s3write_using(erate_libs,
               FUN = write.csv,
               row.names = F,
-              bucket = "erate-data/data",
+              bucket = "erate-data/data/AVI8-SVP9_Commitments",
               object = "Libraries_Funded_Committed_AVI8-SVP9_with_FSCS_Matches.csv")
 
 print("erate_libs with FSCS dataset written to s3")
@@ -436,57 +434,11 @@ erate_pls <- erate_pls %>%
 s3write_using(erate_pls,
               FUN = write.csv,
               row.names = F,
-              bucket = "erate-data/data",
-              object = "erate_imls.csv")
+              bucket = "erate-data/data/AVI8-SVP9_Commitments",
+              object = "Libraries_Funded_Committed_AVI8-SVP9_with_PLS_Data.csv")
 
 print("erate_imls written to s3")
 
-# left join IMLS with erate_libs
-imls_erate <- imls_2014to2020 %>%
-  # We only have erate from 2016 forward so we can filter out PLS data from pre-2016
-  filter(PLS_YEAR > 2015) %>% 
-  # Using ros entity numbers join the rest of the erate data
-  left_join(erate_libs,
-            by = c("FSCSKEY", "FSCS_SEQ")) %>%
-  relocate(ros_entity_number, .before = FSCSKEY) %>% 
-  # Create a Description column for LOCALE_ADD and fill based on condition
-  mutate(
-    LOCALE_ADD_DESCR = case_when(
-      LOCALE_ADD == 11 ~ "City Large",
-      LOCALE_ADD == 12 ~ "City Midsize",
-      LOCALE_ADD == 13 ~ "City Small",
-      LOCALE_ADD == 21 ~ "Suburban Large",
-      LOCALE_ADD == 22 ~ "Suburban Midsize",
-      LOCALE_ADD == 23 ~ "Suburban Small",
-      LOCALE_ADD == 31 ~ "Town Fringe",
-      LOCALE_ADD == 32 ~ "Town Distant",
-      LOCALE_ADD == 33 ~ "Town Remote",
-      LOCALE_ADD == 41 ~ "Rural Fringe",
-      LOCALE_ADD == 42 ~ "Rural Distant",
-      LOCALE_ADD == 43 ~ "Rural Remote",
-      LOCALE == 11 ~ "City Large",
-      LOCALE == 12 ~ "City Midsize",
-      LOCALE == 13 ~ "City Small",
-      LOCALE == 21 ~ "Suburban Large",
-      LOCALE == 22 ~ "Suburban Midsize",
-      LOCALE == 23 ~ "Suburban Small",
-      LOCALE == 31 ~ "Town Fringe",
-      LOCALE == 32 ~ "Town Distant",
-      LOCALE == 33 ~ "Town Remote",
-      LOCALE == 41 ~ "Rural Fringe",
-      LOCALE == 42 ~ "Rural Distant",
-      LOCALE == 43 ~ "Rural Remote"
-    )
-  )
-
-# Write to s3 bucket
-s3write_using(imls_erate,
-              FUN = write.csv,
-              row.names = F,
-              bucket = "erate-data/data",
-              object = "imls_erate.csv")
-
-print("imls_erate written to s3")
 
 # Make a smaller dataset for use on Shiny dashboard
 erate_imls_compact <- erate_pls %>%
@@ -518,7 +470,7 @@ s3write_using(
   erate_imls_compact,
   FUN = write.csv,
   row.names = F,
-  bucket = "erate-data/data",
+  bucket = "erate-data/data/AVI8-SVP9_Commitments",
   object = "erate_imls_compact.csv"
 )
 

@@ -1,0 +1,288 @@
+---
+title: "Download Speeds by State"
+author: "Bree Norlander"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output: pdf_document
+knit: (function(inputFile, encoding) { rmarkdown::render(inputFile, encoding = encoding, output_file = file.path(dirname(inputFile), paste0("Download_Speeds_by_State_for_Marijke_Report_", Sys.Date(), ".pdf"))) })
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(dev = 'pdf')
+```
+
+```{r, include=FALSE}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(aws.s3)
+library(kableExtra)
+```
+
+```{r, include=FALSE}
+erate_imls <- s3read_using(FUN = read.csv, object = "erate_imls_compact.csv", bucket = "erate-data/data/AVI8-SVP9_Commitments")
+
+# Read in IMLS PLS dataset stored in S3
+full_imls <- s3read_using(FUN = read.csv, object = "2014-2020_OUTLETs_and_AEs_Merged.csv", bucket = "erate-data/data/IMLS_PLS")
+
+bucket <- get_bucket_df("erate-data")
+LastModified <- as.Date(bucket$LastModified[bucket$Key == "data/AVI8-SVP9_Commitments/erate_imls_compact.csv"])
+```
+
+```{r, include=FALSE}
+# Add in LOCALE Descriptions to full_imls
+full_imls <- full_imls %>% 
+  mutate(
+    LOCALE_ADD_DESCR = case_when(
+      LOCALE_ADD == 11 ~ "City Large",
+      LOCALE_ADD == 12 ~ "City Midsize",
+      LOCALE_ADD == 13 ~ "City Small",
+      LOCALE_ADD == 21 ~ "Suburban Large",
+      LOCALE_ADD == 22 ~ "Suburban Midsize",
+      LOCALE_ADD == 23 ~ "Suburban Small",
+      LOCALE_ADD == 31 ~ "Town Fringe",
+      LOCALE_ADD == 32 ~ "Town Distant",
+      LOCALE_ADD == 33 ~ "Town Remote",
+      LOCALE_ADD == 41 ~ "Rural Fringe",
+      LOCALE_ADD == 42 ~ "Rural Distant",
+      LOCALE_ADD == 43 ~ "Rural Remote",
+      LOCALE == 11 ~ "City Large",
+      LOCALE == 12 ~ "City Midsize",
+      LOCALE == 13 ~ "City Small",
+      LOCALE == 21 ~ "Suburban Large",
+      LOCALE == 22 ~ "Suburban Midsize",
+      LOCALE == 23 ~ "Suburban Small",
+      LOCALE == 31 ~ "Town Fringe",
+      LOCALE == 32 ~ "Town Distant",
+      LOCALE == 33 ~ "Town Remote",
+      LOCALE == 41 ~ "Rural Fringe",
+      LOCALE == 42 ~ "Rural Distant",
+      LOCALE == 43 ~ "Rural Remote"
+    ))
+```
+
+```{r, include=FALSE}
+# We will only be investigating libraries that have appeared in the IMLS PLS since 2016
+# Create a filtered dataset for analysis
+filtered_erate <- erate_imls %>% 
+  filter(!is.na(FSCSKEY) & !is.na(FSCS_SEQ) & MOST_RECENT_PLS > 2015)
+```
+
+```{r, include=FALSE}
+# Add normalized columns of upload and download speed requested to the dataset
+filtered_erate <- filtered_erate %>%
+  # Normalize the download and upload speeds to Megabits per second
+  mutate(download_speed_mbps = case_when(
+    form_471_download_speed_unit_name == "Mbps" ~ download_speed,
+    form_471_download_speed_unit_name == "Gbps" ~ download_speed * 1000
+  )) %>%
+  mutate(upload_speed_mbps = case_when(
+    form_471_upload_speed_unit_name == "Mbps" ~ download_speed,
+    form_471_upload_speed_unit_name == "Gbps" ~ download_speed * 1000
+  )) 
+```
+
+```{r wishlist, include=FALSE}
+# For the following states: WV, ME, WA, NH, IN, NC, MT
+# How many libraries have a download speed of 25-100 Mbps?
+# How many libraries have a download speed below 25 Mbps?
+```
+\noindent\rule{\textwidth}{1pt}
+# Data
+The Universal Service Administrative Company provides 2016-present E-rate data openly at [https://opendata.usac.org/browse](https://opendata.usac.org/browse). There are fifteen different datasets available relating to E-rate. This report focuses on the “E-rate Recipient Details And Commitments” [dataset](https://opendata.usac.org/E-rate/E-rate-Recipient-Details-And-Commitments/avi8-svp9) providing information on commitments made to entities. We access the data once per week via the API, filter the data to eliminate any recipients or billed entities that are clearly public schools or public school systems, and calculate the estimated committed dollars at the recipient level. Our dataset then includes individual libraries, library systems, non-instructional facilities (NIFs), many (but not all) of which can also be found in the IMLS PLS dataset. For this analysis, we have further filtered the data to only entities which can be found in an IMLS PLS dataset from 2016-2019. Only IMLS PLS Outlets have FSCS_SEQ codes. If our data includes an entity which can only be found in the IMLS PLS AE (administrative entity) data, it will have an FSCS_SEQ code of 999. This is unique to our data and not reflected in the IMLS data.
+
+Analysis in this report is reflective of data through `r format(LastModified, '%B %d, %Y')`. Data can change at any time due to additional commitments in the current funding year and in the past funding years due to audits, refunds, or appeals.
+
+The dataset used for this analysis should be cited as the following:
+E-rate Recipient Details And Commitments Dataset, [https://opendata.usac.org/E-rate/E-rate-Recipient-Details-And-Commitments/avi8-svp9](https://opendata.usac.org/E-rate/E-rate-Recipient-Details-And-Commitments/avi8-svp9).
+
+Questions or comments? Please contact Bree Norlander at [norlab@uw.edu](mailto:norlab@uw.edu).
+
+See additional analysis of this data at: [https://uwtascha.shinyapps.io/eRate_dashboard/](https://uwtascha.shinyapps.io/eRate_dashboard/).
+
+\newpage
+# Nationwide
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results="asis", fig.align = "center"}
+# Super helpful for LATEX: https://bookdown.org/yihui/rmarkdown-cookbook/results-asis.html
+
+temp <- filtered_erate %>%
+  filter(
+    !is.na(download_speed_mbps),
+    chosen_category_of_service == "Category1",
+    form_471_service_type_name == "Data Transmission and/or Internet Access",
+    form_471_function_name == "Fiber"
+  ) %>%
+  group_by(ros_entity_number) %>%
+  select(ros_entity_number,
+         FSCSKEY,
+         FSCS_SEQ,
+         funding_year,
+         download_speed_mbps) %>%
+  arrange(funding_year) %>%
+  slice_max(download_speed_mbps, with_ties = F)
+tot <- nrow(temp)
+low <- temp %>% filter(download_speed_mbps < 25) %>%
+  nrow()
+med <-
+  temp %>% filter(download_speed_mbps >= 25 &
+                    download_speed_mbps <= 100) %>%
+  nrow()
+high <- temp %>% filter(download_speed_mbps > 100) %>%
+  nrow()
+cat(
+  paste0(
+    "There were **",
+    
+    tot,
+    
+    "** IMLS libraries **nationally** that applied for Form 471 Function *Fiber* with Form 471 Service Type of *Data Transmission and/or Internet Access* at some point between 2016-2020. Of those, **",
+    
+    low,
+    
+    "** (",
+    
+    round((low / tot) * 100, 1),
+    
+    "%) always applied for service below 25 Mbps download speed; **",
+    
+    med,
+    
+    "** (",
+    
+    round((med / tot) * 100, 1),
+    
+    "%) applied at some point for service of 25-100 Mbps download speed (but not greater than 100); and **",
+    
+    high,
+    
+    "** (",
+    
+    round((high / tot) * 100, 1),
+    
+    "%) applied at some point for service of greater than 100 Mbps download speed."
+  )
+)
+cat("  \n  \n")
+rm(tot, low, med, high, temp)
+```
+
+\newpage
+# State Specific
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results="asis", fig.align = "center"}
+# Super helpful for LATEX: https://bookdown.org/yihui/rmarkdown-cookbook/results-asis.html
+
+states <- filtered_erate %>% select(ros_physical_state) %>% distinct() %>% arrange(ros_physical_state) %>% pull()
+
+# State specific narrative
+# https://stackoverflow.com/a/36381976/5593458
+# Use this code for ALL states: for (i in datasets::state.abb) {
+for (i in states) {
+  temp <- filtered_erate %>%
+    filter(
+      !is.na(download_speed_mbps),
+      #form_471_product_name != "Taxes and USF Fees",
+      ros_physical_state == i,
+      chosen_category_of_service == "Category1",
+      form_471_service_type_name == "Data Transmission and/or Internet Access",
+      form_471_function_name == "Fiber"
+    ) %>%
+    group_by(ros_entity_number) %>%
+    select(ros_entity_number,
+           FSCSKEY,
+           FSCS_SEQ,
+           funding_year,
+           download_speed_mbps) %>%
+    arrange(funding_year) %>% 
+    slice_max(download_speed_mbps, with_ties = F)
+  tot <- nrow(temp)
+  low <- temp %>% filter(download_speed_mbps < 25) %>% 
+      nrow()
+  med <- temp %>% filter(download_speed_mbps >= 25 & download_speed_mbps <= 100) %>% 
+      nrow()
+  high <- temp %>% filter(download_speed_mbps > 100) %>% 
+      nrow()
+  cat(paste0("## ", i, "  \n"))
+  cat(paste0(
+    "There were **",
+    
+    tot,
+    
+    "** IMLS libraries in **",
+    i,
+    
+    "** that applied for Form 471 Function *Fiber* with Form 471 Service Type of *Data Transmission and/or Internet Access* at some point between 2016-2020. Of those, **",
+    
+    low,
+    
+    "** (",
+    
+    round((low/tot)*100, 1),
+    
+    "%) always applied for service below 25 Mbps download speed; **",
+   
+    med,
+    
+    "** (",
+    
+    round((med/tot)*100, 1),
+    
+    "%) applied at some point for service of 25-100 Mbps download speed (but not greater than 100); and **",
+    
+    high,
+    
+    "** (",
+    
+    round((high/tot)*100, 1),
+    
+    "%) applied at some point for service of greater than 100 Mbps download speed."
+  ))
+  cat("  \n  \n")
+  rm(tot, low, med, high)
+}
+```
+
+
+\newpage
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results="asis", fig.align = "center"}
+states <- filtered_erate %>% select(ros_physical_state) %>% distinct() %>% arrange(ros_physical_state) %>% pull()
+
+# State specific tables
+# Use this code for ALL states: for (i in datasets::state.abb) {
+for (i in states) {
+  filtered_erate %>%
+    filter(
+      !is.na(download_speed_mbps),
+      #form_471_product_name != "Taxes and USF Fees",
+      ros_physical_state == i,
+      chosen_category_of_service == "Category1",
+      form_471_service_type_name == "Data Transmission and/or Internet Access",
+      form_471_function_name == "Fiber"
+    ) %>%
+    group_by(ros_entity_number) %>%
+    select(ros_entity_number,
+           FSCSKEY,
+           FSCS_SEQ,
+           ros_entity_name,
+           funding_year,
+           download_speed_mbps) %>%
+    arrange(funding_year) %>% 
+    pivot_wider(names_from = funding_year,
+                values_from = download_speed_mbps,
+                values_fn = max) %>%
+    arrange(ros_entity_number) %>% 
+    kable(
+      caption = paste0(i, " Public Library Entities that Requested Form 471 Function Name 'Fiber' | Maximum Mbps Speed Requested by Year"),
+      booktabs = T,
+      longtable = TRUE,
+      digits = 0
+    ) %>%
+    # https://stackoverflow.com/a/64124545/5593458 about font size and longtable
+    kable_styling(latex_options = c("repeat_header", "HOLD_position", "striped"), font_size = 7) %>%
+    landscape() %>%
+    print()
+}
+```
+

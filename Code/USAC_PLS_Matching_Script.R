@@ -400,6 +400,7 @@ geo_string_match <- geo_string_match %>%
 # Write to s3 bucket
 s3write_using(geo_string_match,
               FUN = write.csv,
+              row.names = F,
               bucket = "erate-data/data/USAC_IMLS_Match",
               object = "USAC_IMLS_MATCHED.csv")
 
@@ -424,6 +425,7 @@ non_matches_2 <- non_matches_2 %>%
 # Write to s3 bucket
 s3write_using(non_matches_2,
               FUN = write.csv,
+              row.names = F,
               bucket = "erate-data/data/USAC_IMLS_Match",
               object = "USAC_Libs_Not_Matched_to_IMLS.csv")
 
