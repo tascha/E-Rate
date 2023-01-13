@@ -3,7 +3,7 @@ title: "Download Speeds by State"
 author: "Bree Norlander"
 date: "`r format(Sys.time(), '%B %d, %Y')`"
 output: pdf_document
-knit: (function(inputFile, encoding) { rmarkdown::render(inputFile, encoding = encoding, output_file = file.path(dirname(inputFile), paste0("Download_Speeds_by_State_for_Marijke_Report_", Sys.Date(), ".pdf"))) })
+knit: (function(inputFile, encoding) { rmarkdown::render(inputFile, encoding = encoding, output_file = file.path(dirname(inputFile), paste0("Download_Speeds_by_State_Report_", Sys.Date(), ".pdf"))) })
 ---
 
 ```{r setup, include=FALSE}
