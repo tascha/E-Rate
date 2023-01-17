@@ -445,26 +445,32 @@ print("erate_imls written to s3")
 # Make a smaller dataset for use on Shiny dashboard
 erate_imls_compact <- erate_pls %>%
   select(
-    ros_entity_number:original_allocation,
-    count_ros,
-    cat1_discount_by_ros_estimated,
-    cat2_discount_by_ros,
+    ros_entity_number,
     FSCSKEY,
     FSCS_SEQ,
-    STABR,
-    LIBID,
-    LIBNAME,
-    ADDRESS,
-    CITY,
-    ZIP,
-    CNTY,
+    ros_entity_name,
+    ros_entity_type,
+    ros_physical_city,
+    ros_physical_state,
+    ros_congressional_district,
+    ros_urban_rural_status,
+    organization_entity_type_name,
+    funding_year,
+    chosen_category_of_service,
+    form_471_service_type_name,
+    ros_square_footage,
+    original_allocation,
+    cat1_discount_by_ros_estimated,
+    cat2_discount_by_ros,
+    ros_latitude,
+    ros_longitude,
     LATITUDE,
     LONGITUD,
+    STABR,
+    LIBNAME,
     LOCALE,
     LOCALE_ADD,
-    LOCALE_ADD_DESCR,
-    SQ_FEET,
-    MOST_RECENT_PLS
+    LOCALE_ADD_DESCR
   )
 
 # Write to s3 bucket
