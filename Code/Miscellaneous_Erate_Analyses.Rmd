@@ -1,0 +1,2491 @@
+---
+title: "E-Rate Analysis"
+output: html_notebook
+---
+
+```{r}
+# turn off scientific notation
+options(scipen=999)
+# show specific number of digits
+options(digits=3)
+```
+
+```{r}
+# Load libraries
+library(RSocrata)
+library(rquery)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(stringr)
+library(glue)
+library(purrr)
+library(janitor)
+library(aws.s3)
+library(gt)
+#library(tidycensus)
+```
+
+```{r}
+# Find out what distinct years exist in the dataset
+read.csv("https://opendata.usac.org/resource/avi8-svp9.csv?$select=distinct%20funding_year")
+```
+
+```{r}
+# Load datasets
+disbursement <- s3read_using(FUN = read.csv, object = "data/QDMP-YGFT_Disbursements/Full_Funded_Disbursements.csv", bucket = "erate-data")
+
+disbursement_merged <- s3read_using(FUN = read.csv, object = "data/USAC_Tables_Merged/Commitments_AVI8-SVP9_and_Disbursements_QDMP-YGFT.csv", bucket = "erate-data")
+
+erate_libs <- s3read_using(FUN = read.csv, object = "data/AVI8-SVP9_Commitments/Libraries_Funded_Committed_AVI8-SVP9.csv", bucket = "erate-data")
+
+erate_imls <- s3read_using(FUN = read.csv, object = "data/AVI8-SVP9_Commitments/erate_imls_compact.csv", bucket = "erate-data")
+
+ae_and_outlets <- s3read_using(FUN = read.csv, object = "data/IMLS_AE_and_Outlets_combined_dataset.csv", bucket = "erate-data")
+ae_and_outlets <- ae_and_outlets %>% select(-X)
+
+imls_outlet_erate <- s3read_using(FUN = read.csv, object = "data/imls_outlet_erate.csv", bucket = "erate-data")
+imls_outlet_erate <- imls_outlet_erate %>% select(-X)
+
+imls_ae_erate <- s3read_using(FUN = read.csv, object = "data/imls_ae_erate.csv", bucket = "erate-data")
+imls_ae_erate <- imls_ae_erate %>% select(-X)
+
+state_pops <- s3read_using(FUN = read.csv, object = "data/Population_Data/State_Populations_2016-2021.csv", bucket = "erate-data")
+
+full_imls_2018 <- read.csv("~/Google Drive/Shared drives/ALA-ERate/Data/2021-06-03_IMLS_MashUp_2018.csv")
+
+full_imls_2019 <- read.csv("~/Google Drive/Shared drives/ALA-ERate/Data/2021-06-03_IMLS_MashUp_2019.csv")
+```
+
+```{r}
+# Look at branches that are part of the consortium with ben 17023688
+erate_imls %>% 
+  filter(billed_entity_number == 17023688) %>% 
+  select(ros_entity_number,
+         ros_entity_name,
+         ros_physical_state,
+         organization_name,
+         funding_year,
+         chosen_category_of_service,
+         cat2_discount_by_ros,
+         cat1_discount_by_ros_estimated) %>%
+  group_by(funding_year, ros_entity_number, ros_entity_name, ros_physical_state) %>%
+  # Code within summarise is to ensure we keep NAs and that they don't become zeroes
+  summarise(Category1 = if(all(is.na(cat1_discount_by_ros_estimated))) NA_real_ 
+            else round(sum(cat1_discount_by_ros_estimated, na.rm = T), 2),
+            Category2 = if(all(is.na(cat2_discount_by_ros))) NA_real_ 
+            else round(sum(cat2_discount_by_ros, na.rm = T), 2)) %>% 
+  pivot_wider(names_from = c(funding_year), values_from = c(Category1, Category2))
+```
+
+To answer Chris J's question:
+Download Speed = greater than or equal to 1000; Download Speed Unit = Mbps
+AND Download Speed = greater than or equal to 1; Download Speed Unit = Gbps
+
+```{r}
+# How many entities requested download speeds of 1 Gbps or greater in 2019?
+erate_libs %>%
+  mutate(download_speed = as.numeric(download_speed)) %>%
+  filter(funding_year == "2019") %>%
+  filter(form_471_download_speed_unit_name == "Gbps" & download_speed >= 1 |
+           form_471_download_speed_unit_name == "Mbps" & download_speed >= 1000) %>%
+   summarise(n_distinct(ros_entity_number, na.rm = T))
+```
+
+```{r}
+# How many entities requested download/upload speeds of 1 Gbps or greater per year?
+erate_libs %>%
+  mutate(download_speed = as.numeric(download_speed)) %>%
+  group_by(funding_year) %>%
+  filter(form_471_download_speed_unit_name == "Gbps" & download_speed >= 1 |
+           form_471_download_speed_unit_name == "Mbps" & download_speed >= 1000) %>%
+  summarise(Cnt_Entities_Gbps_Download = n_distinct(ros_entity_number, na.rm = T)) %>% 
+  # Add in the upload counts
+  left_join(erate_libs %>% 
+              mutate(upload_speed = as.numeric(upload_speed)) %>%
+              group_by(funding_year) %>%
+              filter(form_471_upload_speed_unit_name == "Gbps" & upload_speed >= 1 | 
+                       form_471_upload_speed_unit_name == "Mbps" & upload_speed >= 1000) %>%
+              summarise(Cnt_Entities_Gbps_Upload = n_distinct(ros_entity_number, na.rm = T))) 
+```
+
+```{r}
+# How many entities requested download speeds of 1 Gbps or greater per year?
+erate_libs %>%
+  mutate(download_speed = as.numeric(download_speed)) %>%
+  group_by(funding_year) %>%
+  filter(form_471_download_speed_unit_name == "Gbps" & download_speed >= 1 |
+           form_471_download_speed_unit_name == "Mbps" & download_speed >= 1000) %>%
+  summarise(Cnt_Entities_Gbps_Download = n_distinct(ros_entity_number, na.rm = T)) %>% 
+  # Add in the upload counts
+  left_join(erate_libs %>% 
+              mutate(upload_speed = as.numeric(upload_speed)) %>%
+              group_by(funding_year) %>%
+              filter(form_471_upload_speed_unit_name == "Gbps" & upload_speed >= 1 | 
+                       form_471_upload_speed_unit_name == "Mbps" & upload_speed >= 1000) %>%
+              summarise(Cnt_Entities_Gbps_Upload = n_distinct(ros_entity_number, na.rm = T))) %>% 
+  pivot_longer(cols = c(Cnt_Entities_Gbps_Download, Cnt_Entities_Gbps_Upload), names_to = "Type", values_to = "Count") %>%
+  ggplot(aes(x=funding_year, y = Count, color = Type)) +
+  geom_point() +
+  geom_line()+
+  theme_linedraw() +
+  scale_color_manual(values = c("#3778bf", "#b0054b"), labels = c("Download Speed", "Upload Speed")) +
+  labs(title = "Count of Library Entities Requesting\n1 Gbps or Greater Upload/Download Speeds",
+       x = "Funding Year",
+       y = "Count of Library Entities",
+       color = "Speed Type")
+
+#ggsave("~/Google Drive/Shared drives/ALA-ERate/Plots/Entities_Requesting_1Gpbs_or_Greater.png")
+```
+
+```{r}
+# How many imls_outlets requested this by year?
+imls_outlet_erate %>%
+  mutate(download_speed = as.numeric(download_speed)) %>%
+  group_by(funding_year) %>%
+  filter(form_471_download_speed_unit_name == "Gbps" & download_speed >= 1 |
+           form_471_download_speed_unit_name == "Mbps" & download_speed >= 1000) %>%
+  summarise(Cnt_Entities_Gbps_Download = n_distinct(ros_entity_number, na.rm = T)) %>% 
+  # Add in the upload counts
+  left_join(imls_outlet_erate %>% 
+              mutate(upload_speed = as.numeric(upload_speed)) %>%
+              group_by(funding_year) %>%
+              filter(form_471_upload_speed_unit_name == "Gbps" & upload_speed >= 1 | 
+                       form_471_upload_speed_unit_name == "Mbps" & upload_speed >= 1000) %>%
+              summarise(Cnt_Entities_Gbps_Upload = n_distinct(ros_entity_number, na.rm = T))) 
+  
+```
+
+```{r}
+# How many entities per state requested this in 2019?
+erate_libs %>%
+  mutate(download_speed = as.numeric(download_speed)) %>%
+  filter(funding_year == "2019") %>%
+  filter(form_471_download_speed_unit_name == "Gbps" & download_speed >= 1 |
+           form_471_download_speed_unit_name == "Mbps" & download_speed >= 1000) %>%
+  group_by(ros_physical_state) %>%
+  summarise(Cnt_Entities_Gbps_Download = n_distinct(ros_entity_number, na.rm = T)) %>% 
+  # Add in the upload counts
+  left_join(erate_libs %>%
+              mutate(upload_speed = as.numeric(upload_speed)) %>%
+              filter(funding_year == "2019") %>%
+              filter(form_471_upload_speed_unit_name == "Gbps" & upload_speed >= 1 |
+                       form_471_upload_speed_unit_name == "Mbps" & upload_speed >= 1000) %>%
+              group_by(ros_physical_state) %>%
+              summarise(Cnt_Entities_Gbps_Upload = n_distinct(ros_entity_number, na.rm = T)))
+```
+
+could you do this in the analysis - there are fields that i think are the same from one fy to the next around bandwidth requested - could you track changes in an entity - so in 2016 this entity requested 100MB of bandwidth, in 2017 they requested the same, and then in 2018 they requested 1GB of bandwidth
+
+```{r}
+# Download speed requested over time by entity
+erate_libs %>%
+  mutate(download_speed = as.numeric(download_speed),
+         ros_physical_state = str_to_lower(str_trim(ros_physical_state, side = "both")),
+         ros_physical_city = str_to_lower(str_trim(ros_physical_city, side = "both"))) %>%
+  # Normalize the download and upload speeds to Megabits per second
+  mutate(download_speed_mbps = case_when(
+    form_471_download_speed_unit_name == "Mbps" ~ download_speed,
+    form_471_download_speed_unit_name == "Gbps" ~ download_speed * 1000
+  )) %>%
+  mutate(upload_speed_mbps = case_when(
+    form_471_upload_speed_unit_name == "Mbps" ~ download_speed,
+    form_471_upload_speed_unit_name == "Gbps" ~ download_speed * 1000
+  )) %>% 
+  group_by(ros_entity_number, ros_entity_name, funding_year) %>%
+  arrange(funding_year) %>% 
+  slice_max(download_speed_mbps, with_ties = F) %>% 
+  select(ros_entity_number, ros_entity_name, ros_physical_city, ros_physical_state, funding_year, download_speed_mbps) %>% 
+  pivot_wider(names_from = funding_year, values_from = download_speed_mbps) #%>%
+  #write.csv("~/Google Drive/Shared drives/ALA-ERate/Data/Download_Mbps_Requested_over_Time_by_Entity.csv")
+```
+
+```{r}
+# Upload speed requested over time by entity
+erate_libs %>%
+  mutate(download_speed = as.numeric(download_speed),
+         ros_physical_state = str_to_lower(str_trim(ros_physical_state, side = "both")),
+         ros_physical_city = str_to_lower(str_trim(ros_physical_city, side = "both"))) %>%
+  # Normalize the download and upload speeds to Megabits per second
+  mutate(download_speed_mbps = case_when(
+    form_471_download_speed_unit_name == "Mbps" ~ download_speed,
+    form_471_download_speed_unit_name == "Gbps" ~ download_speed * 1000
+  )) %>%
+  mutate(upload_speed_mbps = case_when(
+    form_471_upload_speed_unit_name == "Mbps" ~ download_speed,
+    form_471_upload_speed_unit_name == "Gbps" ~ download_speed * 1000
+  )) %>% 
+  group_by(ros_entity_number, ros_entity_name, funding_year) %>%
+  arrange(funding_year) %>% 
+  slice_max(upload_speed_mbps, with_ties = F) %>% 
+  select(ros_entity_number, ros_entity_name, ros_physical_city, ros_physical_state, funding_year, upload_speed_mbps) %>% 
+  pivot_wider(names_from = funding_year, values_from = upload_speed_mbps) #%>%
+  #write.csv("~/Google Drive/Shared drives/ALA-ERate/Data/Upload_Mbps_Requested_over_Time_by_Entity.csv")
+```
+
+```{r}
+# What is the average price per Mb download speed
+# Upload speed requested over time by entity
+erate_libs %>%
+  mutate(download_speed = as.numeric(download_speed),
+         upload_speed = as.numeric(upload_speed),
+         ros_physical_state = str_to_lower(str_trim(ros_physical_state, side = "both")),
+         ros_physical_city = str_to_lower(str_trim(ros_physical_city, side = "both"))) %>%
+  # Normalize the download and upload speeds to Megabits per second
+  mutate(download_speed_mbps = case_when(
+    form_471_download_speed_unit_name == "Mbps" ~ download_speed,
+    form_471_download_speed_unit_name == "Gbps" ~ download_speed * 1000
+  )) %>%
+  mutate(upload_speed_mbps = case_when(
+    form_471_upload_speed_unit_name == "Mbps" ~ upload_speed,
+    form_471_upload_speed_unit_name == "Gbps" ~ upload_speed * 1000
+  )) %>% 
+  mutate(download_cost_per_Mb = download_speed_mbps/total_monthly_cost,
+         upload_cost_per_Mb = upload_speed_mbps/total_monthly_cost) %>% 
+  group_by(funding_year) %>% 
+  summarise(average_download_cost = mean(download_cost_per_Mb, trim = 0.05, na.rm = T),
+    average_upload_cost = mean(upload_cost_per_Mb, trim = 0.05, na.rm = T))
+```
+
+# Playing around with possible dashboard visualizations
+
+```{r}
+# For iconference poster number of unique entities per year
+erate_libs %>% 
+  group_by(funding_year) %>% 
+  summarise(n_distinct(ros_entity_number))
+```
+
+```{r}
+# For number of unique entities per state per year
+erate_imls %>% 
+  group_by(funding_year, ros_physical_state) %>% 
+  summarise(n_distinct(ros_entity_number))
+```
+
+
+```{r}
+# For iconference poster number of unique imls entities per year
+erate_imls %>% 
+  filter(!is.na(FSCSKEY) & !is.na(FSCS_SEQ)) %>% 
+  group_by(funding_year) %>% 
+  summarise(n_distinct(ros_entity_number))
+```
+
+```{r}
+# Create a table of cat1 and cat 2 discounts (that could be filtered by year)
+# https://stackoverflow.com/a/54805598/5593458 This is about NA summing
+# also https://stackoverflow.com/a/24232804/5593458
+erate_libs %>% 
+  select(ros_physical_state, funding_year, chosen_category_of_service, cat2_discount_by_ros, cat1_discount_by_ros_estimated) %>%
+  filter(funding_year == "2019") %>%
+  group_by(ros_physical_state) %>%
+  # Code within summarise is to ensure we keep NAs and that they don't become zeroes
+  summarise(sum_cat1_discount = if(all(is.na(cat1_discount_by_ros_estimated))) NA_real_ 
+            else sum(cat1_discount_by_ros_estimated, na.rm = T),
+            sum_cat2_discount = if(all(is.na(cat2_discount_by_ros))) NA_real_ 
+            else sum(cat2_discount_by_ros, na.rm = T)) %>%
+  # Add a columns showing state total AND the Pct of libraries total
+  mutate(state_total = rowSums(select(., sum_cat1_discount, sum_cat2_discount), na.rm = TRUE),
+         pct_of_library_total = paste0(round(state_total / sum(state_total, na.rm = T)*100, 2), "%")) 
+```
+
+```{r}
+# Create a table of cat1 and cat 2 discounts (that could be filtered by year)
+# https://stackoverflow.com/a/54805598/5593458 This is about NA summing
+# also https://stackoverflow.com/a/24232804/5593458
+erate_imls %>% 
+  select(ros_physical_state, funding_year, chosen_category_of_service, cat2_discount_by_ros, cat1_discount_by_ros_estimated) %>%
+  filter(ros_physical_state == 'WA') %>% 
+  group_by(funding_year) %>%
+  # Code within summarise is to ensure we keep NAs and that they don't become zeroes
+  summarise(sum_cat1_discount = if(all(is.na(cat1_discount_by_ros_estimated))) NA_real_ 
+            else sum(cat1_discount_by_ros_estimated, na.rm = T),
+            sum_cat2_discount = if(all(is.na(cat2_discount_by_ros))) NA_real_ 
+            else sum(cat2_discount_by_ros, na.rm = T)) %>%
+  rowwise() %>% 
+  # Add a columns showing state total 
+  mutate(state_total = sum(c(sum_cat1_discount, sum_cat2_discount), na.rm = TRUE)) 
+```
+
+
+
+```{r}
+# Create a table of cat1 and cat 2 discounts using only imls_outlet data
+# https://stackoverflow.com/a/54805598/5593458 This is about NA summing
+# also https://stackoverflow.com/a/24232804/5593458
+imls_outlet_erate %>% # just IMLS outlets
+  select(ros_physical_state, funding_year, chosen_category_of_service, cat2_discount_by_ros, cat1_discount_by_ros_estimated) %>%
+  filter(funding_year == "2019") %>%
+  group_by(ros_physical_state) %>%
+  # Code within summarise is to ensure we keep NAs and that they don't become zeroes
+  summarise(sum_cat1_discount = if(all(is.na(cat1_discount_by_ros_estimated))) NA_real_ 
+            else sum(cat1_discount_by_ros_estimated, na.rm = T),
+            sum_cat2_discount = if(all(is.na(cat2_discount_by_ros))) NA_real_ 
+            else sum(cat2_discount_by_ros, na.rm = T)) %>%
+  # Add a columns showing state total AND the Pct of libraries total
+  mutate(state_total = rowSums(select(., sum_cat1_discount, sum_cat2_discount), na.rm = TRUE),
+         pct_of_library_total = paste0(round(state_total / sum(state_total, na.rm = T)*100, 2), "%")) 
+```
+
+```{r}
+# library(tidycensus)
+# # Create a dataframe of state populations
+# years <- read.csv("https://opendata.usac.org/resource/avi8-svp9.csv?$select=distinct%20funding_year")[[1]]
+# 
+# y = list()
+# 
+# # Call the API for each year's population statistics (but there is no data for 2020 in this location (or 2021) hence minus 2)
+# for (i in 1:(length(years)-2)) {
+#   y[[i]] <- get_estimates(geography = "state",
+#                      product = "population",
+#                      year = years[i],
+#                      key = Sys.getenv("CENSUS_API_KEY"))
+# 
+#   y[[i]] <- y[[i]] %>%
+#     mutate(year = years[i]) %>%
+#     filter(variable == "POP") %>%
+#     mutate(STABR = case_when(
+#            NAME != "Puerto Rico" ~ usdata::state2abbr(NAME),
+#            NAME == "Puerto Rico" ~ "PR"
+#          ))
+# }
+# 
+# state_pops <- bind_rows(y)
+# 
+# # 2020 pops retrieved from https://www.census.gov/data/tables/2020/dec/2020-apportionment-data.html
+# pop_2020 <- readxl::read_xlsx("~/Google Drive/Shared drives/ALA-ERate/Data/CENSUS-apportionment-2020-table02.xlsx", range = "A4:B57") %>% 
+#   slice(-52L) %>% 
+#   mutate(STABR = case_when(
+#            AREA != "Puerto Rico" ~ usdata::state2abbr(AREA),
+#            AREA == "Puerto Rico" ~ "PR"
+#          )) %>% 
+#   mutate(variable = "POP",
+#          year = 2020) %>% 
+#   rename(NAME = AREA,
+#          value = `RESIDENT POPULATION (APRIL 1, 2020)`) %>% 
+#   left_join(state_pops %>% distinct(STABR, GEOID))
+# 
+# state_pops <- state_pops %>% rbind(pop_2020) 
+# 
+# write.csv(state_pops, "~/Google Drive/Shared drives/ALA-ERate/Data/State_Populations_2016-2020.csv")
+```
+
+```{r}
+# Per capita calculations
+# Create a table of cat1 and cat 2 discounts
+# https://stackoverflow.com/a/54805598/5593458 This is about NA summing
+# also https://stackoverflow.com/a/24232804/5593458
+erate_libs %>% 
+  select(ros_physical_state, funding_year, chosen_category_of_service, cat2_discount_by_ros, cat1_discount_by_ros_estimated) %>%
+  filter(funding_year == "2019") %>%
+  group_by(ros_physical_state) %>%
+  # Code within summarise is to ensure we keep NAs and that they don't become zeroes
+  summarise(sum_cat1_discount = if(all(is.na(cat1_discount_by_ros_estimated))) NA_real_ 
+            else sum(cat1_discount_by_ros_estimated, na.rm = T),
+            sum_cat2_discount = if(all(is.na(cat2_discount_by_ros))) NA_real_ 
+            else sum(cat2_discount_by_ros, na.rm = T)) %>%
+  # Add a columns showing state total AND the Pct of libraries total
+  mutate(state_total = rowSums(select(., sum_cat1_discount, sum_cat2_discount), na.rm = TRUE),
+         pct_of_library_total = paste0(round(state_total / sum(state_total, na.rm = T)*100, 2), "%")) %>% 
+  as.data.frame() %>% 
+  # add in populations stats and calculate per capita discount
+  left_join(state_pops %>% 
+              filter(year == "2019") %>% 
+              select(value, STABR), 
+            by = c("ros_physical_state" = "STABR")
+            ) %>% 
+  rename(state_pop = value) %>% 
+  mutate(per_capita_discount = round(state_total / state_pop, 2)) %>% 
+  arrange(desc(per_capita_discount))
+```
+
+```{r}
+# Per capita calculations
+# Create a table of cat1 and cat 2 discounts using only imls outlets data
+# https://stackoverflow.com/a/54805598/5593458 This is about NA summing
+# also https://stackoverflow.com/a/24232804/5593458
+imls_outlet_erate %>%  # IMLS outlets only
+  select(ros_physical_state, funding_year, chosen_category_of_service, cat2_discount_by_ros, cat1_discount_by_ros_estimated) %>%
+  filter(funding_year == "2019") %>%
+  group_by(ros_physical_state) %>%
+  # Code within summarise is to ensure we keep NAs and that they don't become zeroes
+  summarise(sum_cat1_discount = if(all(is.na(cat1_discount_by_ros_estimated))) NA_real_ 
+            else sum(cat1_discount_by_ros_estimated, na.rm = T),
+            sum_cat2_discount = if(all(is.na(cat2_discount_by_ros))) NA_real_ 
+            else sum(cat2_discount_by_ros, na.rm = T)) %>%
+  # Add a columns showing state total AND the Pct of libraries total
+  mutate(state_total = rowSums(select(., sum_cat1_discount, sum_cat2_discount), na.rm = TRUE),
+         pct_of_library_total = paste0(round(state_total / sum(state_total, na.rm = T)*100, 2), "%")) %>% 
+  as.data.frame() %>% 
+  # add in populations stats and calculate per capita discount
+  left_join(state_pops %>% 
+              filter(year == "2019") %>% 
+              select(value, STABR), 
+            by = c("ros_physical_state" = "STABR")
+            ) %>% 
+  rename(state_pop = value) %>% 
+  mutate(per_capita_discount = round(state_total / state_pop, 2)) %>% 
+  arrange(desc(per_capita_discount))
+```
+
+```{r}
+# Specific csv request from CJ
+
+
+# Per capita calculations
+# Create a table of cat1 and cat 2 discounts using only imls outlets data
+# https://stackoverflow.com/a/54805598/5593458 This is about NA summing
+# also https://stackoverflow.com/a/24232804/5593458
+imls_outlet_erate %>%  # IMLS outlets only
+  select(ros_physical_state, funding_year, chosen_category_of_service, cat2_discount_by_ros, cat1_discount_by_ros_estimated) %>%
+  group_by(funding_year, ros_physical_state) %>%
+  # Code within summarise is to ensure we keep NAs and that they don't become zeroes
+  summarise(sum_cat1_discount = if(all(is.na(cat1_discount_by_ros_estimated))) NA_real_ 
+            else sum(cat1_discount_by_ros_estimated, na.rm = T),
+            sum_cat2_discount = if(all(is.na(cat2_discount_by_ros))) NA_real_ 
+            else sum(cat2_discount_by_ros, na.rm = T)) %>%
+  # Add a columns showing state total AND the Pct of libraries total
+  rowwise() %>% 
+  mutate(state_year_total = sum(sum_cat1_discount, sum_cat2_discount, na.rm = TRUE)) %>% 
+  as.data.frame() %>% 
+  # add in populations stats and calculate per capita discount
+  left_join(state_pops %>% 
+              select(value, STABR, year), 
+            by = c("ros_physical_state" = "STABR", "funding_year" = "year")
+            ) %>% 
+  rename(state_pop = value) %>% 
+  mutate(cat1_per_capita_discount = round(sum_cat1_discount / state_pop, 2),
+         cat2_per_capita_discount = round(sum_cat2_discount / state_pop, 2),
+         total_per_capita_discount = round(state_year_total / state_pop, 2)) #%>% 
+  #write.csv((paste0("~/Google Drive File Stream/Shared drives/ALA-ERate/Data/States_Years_Cat1_Cat2_", Sys.Date(), ".csv")))
+```
+
+```{r}
+# Use only IMLS recipients
+# Create a table of cat1 and cat 2 discounts & per_capita_discounts by year and state
+# https://stackoverflow.com/a/54805598/5593458 This is about NA summing
+# also https://stackoverflow.com/a/24232804/5593458
+erate_imls %>% 
+  filter(!is.na(FSCSKEY)) %>% # Just IMLS entities
+  select(ros_physical_state, funding_year, chosen_category_of_service, cat2_discount_by_ros, cat1_discount_by_ros_estimated) %>%
+  group_by(ros_physical_state, funding_year) %>%
+  # Code within summarise is to ensure we keep NAs and that they don't become zeroes
+  summarise(sum_cat1_discount = if(all(is.na(cat1_discount_by_ros_estimated))) NA_real_ 
+            else sum(cat1_discount_by_ros_estimated, na.rm = T),
+            sum_cat2_discount = if(all(is.na(cat2_discount_by_ros))) NA_real_ 
+            else sum(cat2_discount_by_ros, na.rm = T)) %>%
+  # Add a columns showing state total AND the Pct of libraries total
+  rowwise() %>% 
+  mutate(state_total = sum(c(sum_cat1_discount, sum_cat2_discount), na.rm = TRUE)) %>% 
+  as.data.frame() %>% 
+  # add in populations stats and calculate per capita discount
+  left_join(state_pops %>% 
+              select(value, year, STABR), 
+            by = c("ros_physical_state" = "STABR", "funding_year" = "year")
+            ) %>% 
+  rename(state_pop = value) %>% 
+  mutate(per_capita_discount = round(state_total / state_pop, 2))
+```
+
+```{r}
+# Create a table of cat1 and cat 2 discounts & per_capita_discounts by year and state
+# https://stackoverflow.com/a/54805598/5593458 This is about NA summing
+# also https://stackoverflow.com/a/24232804/5593458
+erate_imls %>% 
+  filter(!is.na(FSCSKEY)) %>% # Just IMLS entities
+  select(ros_physical_state, funding_year, chosen_category_of_service, cat2_discount_by_ros, cat1_discount_by_ros_estimated) %>%
+  group_by(ros_physical_state, funding_year) %>%
+  # Code within summarise is to ensure we keep NAs and that they don't become zeroes
+  summarise(sum_cat1_discount = if(all(is.na(cat1_discount_by_ros_estimated))) NA_real_ 
+            else sum(cat1_discount_by_ros_estimated, na.rm = T),
+            sum_cat2_discount = if(all(is.na(cat2_discount_by_ros))) NA_real_ 
+            else sum(cat2_discount_by_ros, na.rm = T)) %>%
+  # Add a columns showing state total AND the Pct of libraries total
+  rowwise() %>% 
+  mutate(state_total = sum(c(sum_cat1_discount, sum_cat2_discount), na.rm = TRUE)) %>% 
+  as.data.frame() %>% 
+  # add in populations stats and calculate per capita discount
+  left_join(state_pops %>% 
+              select(value, year, STABR), 
+            by = c("ros_physical_state" = "STABR", "funding_year" = "year")
+            ) %>% 
+  rename(state_pop = value) %>% 
+  mutate(per_capita_discount = round(state_total / state_pop, 2)) %>% 
+  select(-sum_cat1_discount, -sum_cat2_discount, -state_total, -state_pop) %>% 
+  pivot_wider(names_from = funding_year, values_from = per_capita_discount)
+```
+
+```{r}
+# Create a table of cat1 and cat 2 discounts & per_capita_discounts by year and state
+# https://stackoverflow.com/a/54805598/5593458 This is about NA summing
+# also https://stackoverflow.com/a/24232804/5593458
+erate_imls %>%
+  filter(!is.na(FSCSKEY)) %>% # Just IMLS entities
+  select(
+    ros_physical_state,
+    funding_year,
+    chosen_category_of_service,
+    cat2_discount_by_ros,
+    cat1_discount_by_ros_estimated
+  ) %>%
+  group_by(ros_physical_state, funding_year) %>%
+  summarise(
+    sum_cat1_discount = if (all(is.na(cat1_discount_by_ros_estimated)))
+      NA_real_
+    else
+      sum(cat1_discount_by_ros_estimated, na.rm = T),
+    sum_cat2_discount = if (all(is.na(cat2_discount_by_ros)))
+      NA_real_
+    else
+      sum(cat2_discount_by_ros, na.rm = T)
+  ) %>%
+  rowwise() %>%
+  mutate(state_total = sum(c(sum_cat1_discount, sum_cat2_discount), na.rm = TRUE)) %>%
+  as.data.frame() %>%
+  # add in populations stats and calculate per capita discount
+  left_join(
+    state_pops %>% select(value, year, STABR),
+    by = c("ros_physical_state" = "STABR",
+           "funding_year" = "year")
+  ) %>%
+  rename(state_pop = value) %>%
+  mutate(per_capita_discount = round(state_total / state_pop, 2)) %>%
+  filter(ros_physical_state == "AK") %>%
+  ggplot(aes(x = funding_year, y = per_capita_discount)) +
+  geom_col(
+    color = "black",
+    fill = "#3778bf",
+    size = 0.2,
+    position = "dodge"
+  ) +
+  theme_linedraw() +
+  geom_text(
+    x = 2020,
+    y = 0,
+    hjust = -0.3,
+    label = "No Data Available",
+    color = "black",
+    size = 3.5,
+    angle = 90
+  ) +
+  scale_y_continuous(labels = scales::dollar_format()) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5)) +
+  labs(title = paste0("Per Capita Commitment"),
+       x = "Funding Year",
+       y = "Commitment Per Capita")
+
+```
+
+```{r}
+# Create a table of per entity discounts by year and state
+# https://stackoverflow.com/a/54805598/5593458 This is about NA summing
+# also https://stackoverflow.com/a/24232804/5593458
+erate_imls %>%
+  filter(!is.na(FSCSKEY)) %>% # Just IMLS entities
+  select(ros_entity_number,
+    ros_physical_state,
+    funding_year,
+    chosen_category_of_service,
+    cat2_discount_by_ros,
+    cat1_discount_by_ros_estimated
+  ) %>%
+  group_by(ros_physical_state, funding_year) %>%
+  summarise(
+    sum_cat1_discount = if (all(is.na(cat1_discount_by_ros_estimated)))
+      NA_real_
+    else
+      sum(cat1_discount_by_ros_estimated, na.rm = T),
+    sum_cat2_discount = if (all(is.na(cat2_discount_by_ros)))
+      NA_real_
+    else
+      sum(cat2_discount_by_ros, na.rm = T),
+    cnt_entities = n_distinct(ros_entity_number)
+  ) %>%
+  rowwise() %>%
+  mutate(state_total = sum(c(sum_cat1_discount, sum_cat2_discount), na.rm = TRUE),
+         per_entity = state_total/cnt_entities) 
+```
+
+```{r}
+# Create a table of commitments per_square footage by year and state
+# https://stackoverflow.com/a/54805598/5593458 This is about NA summing
+# also https://stackoverflow.com/a/24232804/5593458
+erate_imls %>% 
+  filter(!is.na(FSCSKEY) & !is.na(FSCS_SEQ)) %>%  # Just IMLS entities
+  select(ros_entity_number, ros_physical_state, funding_year, chosen_category_of_service, cat2_discount_by_ros, cat1_discount_by_ros_estimated, ros_square_footage) %>%
+  group_by(ros_physical_state, funding_year) %>%
+  # Code within summarise is to ensure we keep NAs and that they don't become zeroes
+  summarise(sum_cat1_discount = if(all(is.na(cat1_discount_by_ros_estimated))) NA_real_ 
+            else sum(cat1_discount_by_ros_estimated, na.rm = T),
+            sum_cat2_discount = if(all(is.na(cat2_discount_by_ros))) NA_real_ 
+            else sum(cat2_discount_by_ros, na.rm = T)) %>%
+  # Add a column showing state total
+  rowwise() %>% 
+  mutate(state_total = sum(c(sum_cat1_discount, sum_cat2_discount), na.rm = TRUE)) %>% 
+  left_join(erate_imls %>%
+              filter(!is.na(FSCSKEY) & !is.na(FSCS_SEQ),
+                     ros_square_footage > 0 & SQ_FEET > 0) %>%  
+              group_by(ros_entity_number, funding_year) %>%
+              slice(n=1) %>%
+              ungroup() %>% 
+              group_by(ros_physical_state, funding_year) %>% 
+              summarise(sum_sq_ft = sum(ros_square_footage, na.rm = T))) %>% 
+  as.data.frame() %>% 
+  mutate(per_sq_ft_commit = round(state_total / sum_sq_ft, 2)) %>% 
+  select(-sum_cat1_discount, -sum_cat2_discount, -state_total, -sum_sq_ft) %>% 
+  pivot_wider(names_from = funding_year, values_from = per_sq_ft_commit)
+```
+
+```{r}
+erate_imls %>%
+  filter(!is.na(ros_entity_number) & !is.na(FSCS_SEQ) & !is.na(STABR),
+         ros_square_footage > 0 & SQ_FEET > 0) %>% 
+  distinct(ros_entity_number, funding_year, .keep_all = T) %>%
+  group_by(ros_entity_number) %>% 
+  slice_max(funding_year, n=1) %>%
+  ungroup() %>% 
+  group_by(STABR, .drop = F) %>% 
+  summarise(Erate_Square_Footage = sum(ros_square_footage, na.rm = T),
+            IMLS_Square_Footage = sum(SQ_FEET, na.rm = T)) #%>% 
+  #write.csv((paste0("~/Google Drive/Shared drives/ALA-ERate/Data/Square_Footage_Comparison_", Sys.Date(), ".csv")))
+```
+
+```{r}
+# Create a table with national Cat1 and Cat2 totals by year
+erate_libs %>%
+  select(funding_year,
+         chosen_category_of_service,
+         cat2_discount_by_ros,
+         cat1_discount_by_ros_estimated) %>%
+  group_by(funding_year) %>%
+  # Code within summarise is to ensure we keep NAs and that they don't become zeroes
+  summarise(Category1_Commitment = if(all(is.na(cat1_discount_by_ros_estimated))) NA_real_ 
+            else sum(cat1_discount_by_ros_estimated, na.rm = T),
+            Category2_Commitment = if(all(is.na(cat2_discount_by_ros))) NA_real_ 
+            else sum(cat2_discount_by_ros, na.rm = T)) %>%
+  rowwise() %>% 
+  mutate(National_Total = sum(c(Category1_Commitment, Category2_Commitment), na.rm = TRUE)) %>% 
+  gt() %>% #https://themockup.blog/posts/2020-09-04-10-table-rules-in-r/
+  fmt_currency(
+    columns = vars(`Category1_Commitment`, `Category2_Commitment`, `National_Total`), # reference cols by name
+    currency = "USD"
+  ) %>% 
+  cols_align(align = "left",
+             columns = 'funding_year') %>% 
+  cols_align(align = "right",
+             columns = vars(`Category1_Commitment`, `Category2_Commitment`, `National_Total`)) %>% 
+  cols_width(vars(funding_year) ~ px(50),
+             vars(Category1_Commitment, Category2_Commitment, National_Total) ~ px(170)
+  ) %>% 
+  cols_label(
+    funding_year = md("Year"),
+    'Category1_Commitment' = md("Category 1<br>Commitment"),
+    'Category2_Commitment' = md("Category 2<br>Commitment"),
+    'National_Total' = md("Total<br>Commitment")
+  ) %>% 
+  tab_header(
+    title = md("**National Summary of Library Entities**")
+    ) %>% 
+  tab_style(
+    style = cell_fill(
+      color = "#DCDCDC"
+    ),
+    locations = list(
+      cells_body(
+        columns = vars(National_Total)
+        )
+      )
+      ) %>%
+  tab_style(
+    style = list(
+      cell_text(weight = "bold")
+    ),
+    locations = cells_column_labels(everything())
+  ) %>% 
+  tab_style(
+    style = list(
+      cell_borders(
+        sides = "left",
+        color = "black",
+        weight = px(3)
+      )
+    ),
+    locations = list(
+      cells_body(
+        columns = vars(National_Total)
+      )
+    )
+    ) %>% 
+  opt_table_lines(extent = "default") %>%
+  tab_options(
+    heading.align = "left",
+    table.border.top.color = "#3778bf",
+    table.border.top.width = px(3),
+    column_labels.border.top.color = "#3778bf",
+    column_labels.border.top.width = px(3),
+    column_labels.border.bottom.color = "black",
+    table_body.hlines.color = "black",
+    table.border.bottom.color = "#3778bf",
+    table.border.bottom.width = px(3),
+    data_row.padding = px(12)
+  ) 
+
+```
+
+```{r}
+# Create a table with national Cat1 and Cat2 totals & percents by year
+erate_libs %>%
+  select(funding_year,
+         chosen_category_of_service,
+         cat2_discount_by_ros,
+         cat1_discount_by_ros_estimated) %>%
+  group_by(funding_year) %>%
+  # Code within summarise is to ensure we keep NAs and that they don't become zeroes
+  summarise(Category1 = if(all(is.na(cat1_discount_by_ros_estimated))) NA_real_ 
+            else sum(cat1_discount_by_ros_estimated, na.rm = T),
+            Category2 = if(all(is.na(cat2_discount_by_ros))) NA_real_ 
+            else sum(cat2_discount_by_ros, na.rm = T)) %>%
+  pivot_longer(!funding_year, names_to = "Category", values_to = "tot") %>% 
+  pivot_wider(names_from = funding_year, names_prefix = "Commitment_", values_from = tot) %>% 
+  mutate_if(is.numeric, .funs = list(perc = ~ (function(x) {x / sum(x)})(.))) %>% # https://stackoverflow.com/a/57171049/5593458
+  relocate(Category, Commitment_2016, Commitment_2016_perc, Commitment_2017, Commitment_2017_perc, Commitment_2018, Commitment_2018_perc, Commitment_2019, Commitment_2019_perc, Commitment_2020, Commitment_2020_perc) %>% 
+  janitor::adorn_totals("row") %>%  # https://stackoverflow.com/a/49819006/5593458
+  gt() %>% #https://themockup.blog/posts/2020-09-04-10-table-rules-in-r/
+  # https://themockup.blog/posts/2020-05-16-gt-a-grammer-of-tables/
+  fmt_currency(
+    columns = vars(Commitment_2016, Commitment_2017, Commitment_2018, Commitment_2019, Commitment_2020),
+    currency = "USD"
+  ) %>% 
+  fmt_percent(
+    columns = vars(Commitment_2016_perc, Commitment_2017_perc, Commitment_2018_perc, Commitment_2019_perc, Commitment_2020_perc),
+    scale_values = T
+  ) %>%
+  cols_align(align = "left",
+             columns = 'Category') %>%
+  cols_align(align = "right",
+             columns = vars(Commitment_2016, Commitment_2016_perc, Commitment_2017, Commitment_2017_perc, Commitment_2018, Commitment_2018_perc, Commitment_2019, Commitment_2019_perc, Commitment_2020, Commitment_2020_perc)) %>% 
+  cols_label(
+    Category = "",
+    Commitment_2016 = "Yearly Total",
+    Commitment_2016_perc = "%",
+    Commitment_2017 = "Yearly Total", 
+    Commitment_2017_perc = "%",
+    Commitment_2018 = "Yearly Total", 
+    Commitment_2018_perc = "%", 
+    Commitment_2019 = "Yearly Total", 
+    Commitment_2019_perc = "%", 
+    Commitment_2020 = "Yearly Total", 
+    Commitment_2020_perc = "%"
+  ) %>% 
+  tab_header(
+    title = md("**National Summary of Library Entity Commitments**")
+    ) %>% 
+  tab_spanner(
+    label = "2016",
+    columns = c(2:3)
+  ) %>% 
+  tab_spanner(
+    label = "2017",
+    columns = c(4:5)
+  ) %>% 
+  tab_spanner(
+    label = "2018",
+    columns = c(6:7)
+  ) %>% 
+  tab_spanner(
+    label = "2019",
+    columns = c(8:9)
+  ) %>% 
+  tab_spanner(
+    label = "2020",
+    columns = c(10:11)
+  ) %>% 
+   tab_style(
+    style = cell_fill(
+      color = "#E8E8E8"
+    ),
+    locations = list(
+      cells_body(
+        columns = vars(Commitment_2016_perc, Commitment_2017_perc, Commitment_2018_perc, Commitment_2019_perc, Commitment_2020_perc)
+        ),
+      cells_column_labels(
+        columns = vars(Commitment_2016_perc, Commitment_2017_perc, Commitment_2018_perc, Commitment_2019_perc, Commitment_2020_perc)
+      )
+      )
+  ) %>%
+  tab_style(
+    style = cell_borders(
+      sides = "top",
+      color = "black",
+      weight = px(2)
+    ),
+    locations = cells_body(
+      columns = everything(),
+      rows = Category == "Total"
+    )
+  ) %>% 
+  opt_table_lines(extent = "default") %>%
+  tab_options(
+      heading.align = "left",
+      row_group.border.top.width = px(3),
+      row_group.border.top.color = "black",
+      row_group.border.bottom.color = "black",
+      table_body.hlines.color = "white",
+      table.border.top.color = "#3778bf",
+      table.border.top.width = px(3),
+      table.border.bottom.color = "#3778bf",
+      table.border.bottom.width = px(3),
+      column_labels.border.bottom.color = "black",
+      column_labels.border.bottom.width = px(2),
+      heading.border.bottom.color = "#3778bf",
+      heading.border.bottom.width = px(3)
+    ) 
+```
+
+
+```{r}
+erate_libs %>% 
+  select(ros_entity_number, funding_year, chosen_category_of_service, cat2_discount_by_ros, cat1_discount_by_ros_estimated) %>%
+  group_by(funding_year) %>%
+  summarise(sum_cat1_discount = sum(cat1_discount_by_ros_estimated, na.rm=T),
+            sum_cat2_allocation = sum(cat2_discount_by_ros, na.rm = T),
+            nat_total = sum_cat1_discount + sum_cat2_allocation,
+            total_entities = n_distinct(ros_entity_number),
+            per_entity_commitment = nat_total/total_entities) %>% 
+  select(funding_year, nat_total, total_entities, per_entity_commitment) 
+```
+
+
+```{r}
+# Visualize above data
+# Color palette: "#3778bf", "#feb209", "#b0054b"
+erate_libs %>%
+  select(funding_year,
+         chosen_category_of_service,
+         cat2_discount_by_ros,
+         cat1_discount_by_ros_estimated) %>%
+  group_by(funding_year) %>%
+  # Code within summarise is to ensure we keep NAs and that they don't become zeroes
+  summarise(Category1_Commitment = if(all(is.na(cat1_discount_by_ros_estimated))) NA_real_ 
+            else round(sum(cat1_discount_by_ros_estimated, na.rm = T), 2),
+            Category2_Commitment = if(all(is.na(cat2_discount_by_ros))) NA_real_ 
+            else round(sum(cat2_discount_by_ros, na.rm = T), 2)) %>%
+  rowwise() %>% 
+  mutate(National_Total = sum(c(Category1_Commitment, Category2_Commitment), na.rm = TRUE)) %>%
+  pivot_longer(c(Category1_Commitment, Category2_Commitment), names_to = "Cat") %>% 
+  mutate(Pct_label = round((value/National_Total)*100, 1)) %>% 
+  ggplot(aes(x = funding_year, y = value, fill = Cat)) +
+  geom_bar(position="fill", stat="identity", color="black") +
+  scale_fill_manual(values=c("#3778bf", "#feb209"), name = "Funding Category", labels = c("Cat 1", "Cat 2")) +
+  geom_label(aes(label=paste0(scales::dollar(value), "\n", Pct_label,"%")), color="black",
+            position = position_fill(vjust = 0.45), size=2.5, show.legend = FALSE) +
+  theme_linedraw() +
+  theme(axis.title.y=element_blank(),
+        axis.title.x=element_blank()) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  labs(title = "Library Commitment Breakdown by Year")
+```
+
+
+```{r}
+# Create a table with national Cat1 and Cat2 totals by year broken out by urban rural status
+erate_libs %>%
+  select(
+    funding_year,
+    chosen_category_of_service,
+    ros_urban_rural_status,
+    cat2_discount_by_ros,
+    cat1_discount_by_ros_estimated
+  ) %>%
+  group_by(funding_year, ros_urban_rural_status) %>%
+  # Code within summarise is to ensure we keep NAs and that they don't become zeroes
+  summarise(Category1_Commitment = if(all(is.na(cat1_discount_by_ros_estimated))) NA_real_ 
+            else sum(cat1_discount_by_ros_estimated, na.rm = T),
+            Category2_Commitment = if(all(is.na(cat2_discount_by_ros))) NA_real_ 
+            else sum(cat2_discount_by_ros, na.rm = T)) %>%
+  rowwise() %>% 
+  mutate(National_Total = sum(c(Category1_Commitment, Category2_Commitment), na.rm = TRUE)) %>% 
+  gt(groupname_col = "funding_year") %>% #https://themockup.blog/posts/2020-09-04-10-table-rules-in-r/
+  # https://themockup.blog/posts/2020-05-16-gt-a-grammer-of-tables/
+  fmt_currency(
+    columns = vars(Category1_Commitment, Category2_Commitment, National_Total), # reference cols by name
+    currency = "USD"
+  ) %>% 
+  fmt_missing(
+    columns = vars(ros_urban_rural_status),
+    missing_text = "Unassigned"
+  ) %>%
+  fmt_missing(
+    columns = vars(Category1_Commitment, Category2_Commitment),
+    missing_text = "Not Applicable"
+  ) %>% 
+  cols_align(align = "left",
+             columns = 'funding_year') %>%
+  cols_align(align = "center",
+             columns = 'ros_urban_rural_status') %>%
+  cols_align(align = "right",
+             columns = vars(Category1_Commitment, Category2_Commitment, National_Total)) %>% 
+  cols_width(vars(ros_urban_rural_status) ~ px(90),
+             vars(Category1_Commitment, Category2_Commitment, National_Total) ~ px(170)
+  ) %>% 
+  cols_label(
+    funding_year = "",
+    ros_urban_rural_status = md("Geography"),
+    Category1_Commitment = md("Category 1<br>Commitment"),
+    Category2_Commitment = md("Category 2<br>Commitment"),
+    National_Total = md("Total<br>Commitment")
+  ) %>% 
+  tab_header(
+    title = md("**National Summary of Library Entities by Geography**")
+    ) %>% 
+  tab_style(
+    style = cell_fill(
+      color = "#DCDCDC"
+    ),
+    locations = list(
+      cells_body(
+        columns = vars(National_Total)
+        )
+      )
+      ) %>%
+  tab_style(
+    style = cell_text(color = "black", weight = "bold"),
+    locations = list(
+      cells_row_groups(),
+      cells_column_labels(everything())
+    )
+  ) %>% 
+  tab_style(
+    style = list(
+      cell_borders(
+        sides = "left",
+        color = "black",
+        weight = px(3)
+      )
+    ),
+    locations = list(
+      cells_body(
+        columns = vars(National_Total)
+      )
+    )
+    ) %>% 
+  opt_table_lines(extent = "default") %>%
+  tab_options(
+    row_group.border.top.width = px(3),
+    row_group.border.top.color = "black",
+    row_group.border.bottom.color = "black",
+    table_body.hlines.color = "white",
+    table.border.top.color = "#3778bf",
+    table.border.top.width = px(3),
+    table.border.bottom.color = "#3778bf",
+    table.border.bottom.width = px(3),
+    column_labels.border.bottom.color = "black",
+    column_labels.border.bottom.width = px(2),
+    heading.border.bottom.color = "#3778bf",
+    heading.border.bottom.width = px(3)
+  ) 
+```
+
+```{r}
+# Create a table with national Cat1 and Cat2 totals by year
+erate_libs %>%
+  mutate(Commitment = case_when(
+    is.na(cat1_discount_by_ros_estimated) ~ cat2_discount_by_ros,
+    is.na(cat2_discount_by_ros) ~ cat1_discount_by_ros_estimated
+  )) %>% 
+  select(
+    funding_year,
+    chosen_category_of_service,
+    ros_urban_rural_status,
+    Commitment
+  ) %>%
+  group_by(funding_year,
+           chosen_category_of_service,
+           ros_urban_rural_status) %>%
+  summarise(Commitment = sum(Commitment, na.rm = T)) %>%
+  ungroup() %>% 
+  group_by(funding_year) %>% 
+  mutate(Pct = Commitment / sum(Commitment)) %>% 
+  pivot_wider(names_from = funding_year, values_from = c(Commitment, Pct), names_sort = T) %>% 
+  relocate(chosen_category_of_service, ros_urban_rural_status, Commitment_2016, Pct_2016, Commitment_2017, Pct_2017, Commitment_2018, Pct_2018, Commitment_2019, Pct_2019, Commitment_2020, Pct_2020) %>% 
+  janitor::adorn_totals("row") %>%  # https://stackoverflow.com/a/49819006/5593458
+  ungroup() %>% 
+  mutate(ros_urban_rural_status = replace_na(ros_urban_rural_status, "Unassigned")) %>% 
+  gt(groupname_col = "ros_urban_rural_status",
+     rowname_col = "chosen_category_of_service") %>% #https://themockup.blog/posts/2020-09-04-10-table-rules-in-r/
+  # https://themockup.blog/posts/2020-05-16-gt-a-grammer-of-tables/
+  fmt_currency(
+    columns = vars(Commitment_2016, Commitment_2017, Commitment_2018, Commitment_2019, Commitment_2020),
+    currency = "USD"
+  ) %>% 
+  fmt_percent(
+    columns = vars(Pct_2016, Pct_2017, Pct_2018, Pct_2019, Pct_2020),
+    scale_values = T
+  ) %>%
+  fmt_missing(
+    columns = vars(Commitment_2016, Pct_2016, Commitment_2017, Pct_2017, Commitment_2018, Pct_2018, Commitment_2019, Pct_2019, Commitment_2020, Pct_2020),
+    missing_text = "None"
+  ) %>%
+  cols_align(align = "left",
+             columns = 'ros_urban_rural_status') %>%
+  cols_align(align = "center",
+             columns = 'chosen_category_of_service') %>%
+  cols_align(align = "right",
+             columns = vars(Commitment_2016, Pct_2016, Commitment_2017, Pct_2017, Commitment_2018, Pct_2018, Commitment_2019, Pct_2019, Commitment_2020, Pct_2020)) %>% 
+  cols_label(
+    Commitment_2016 = "Yearly Total",
+    Pct_2016 = "%",
+    Commitment_2017 = "Yearly Total", 
+    Pct_2017 = "%",
+    Commitment_2018 = "Yearly Total", 
+    Pct_2018 = "%", 
+    Commitment_2019 = "Yearly Total", 
+    Pct_2019 = "%", 
+    Commitment_2020 = "Yearly Total", 
+    Pct_2020 = "%"
+  ) %>% 
+  tab_header(
+    title = md("**National Summary of Urban and Rural Commitments by Category**")
+    ) %>% 
+  tab_spanner(
+    label = "2016",
+    columns = c(3:4)
+  ) %>% 
+  tab_spanner(
+    label = "2017",
+    columns = c(5:6)
+  ) %>% 
+  tab_spanner(
+    label = "2018",
+    columns = c(7:8)
+  ) %>% 
+  tab_spanner(
+    label = "2019",
+    columns = c(9:10)
+  ) %>% 
+  tab_spanner(
+    label = "2020",
+    columns = c(11:12)
+  ) %>% 
+   tab_style(
+    style = cell_fill(
+      color = "#E8E8E8"
+    ),
+    locations = list(
+      cells_body(
+        columns = vars(Pct_2016, Pct_2017, Pct_2018, Pct_2019, Pct_2020)
+        ),
+      cells_column_labels(
+        columns = vars(Pct_2016, Pct_2017, Pct_2018, Pct_2019, Pct_2020)
+      )
+      )
+  ) %>%
+  tab_style(
+    style = cell_text(color = "black", weight = "bold"),
+    locations = list(
+      cells_row_groups(),
+      cells_column_labels(everything()),
+      cells_column_spanners(everything())
+    )
+  ) %>% 
+  tab_style(
+    style = cell_borders(
+      sides = "top",
+      color = "black",
+      weight = px(2)
+    ),
+    locations = cells_body(
+      columns = everything(),
+      rows = ros_urban_rural_status == "Total"
+    )
+  ) %>% 
+  tab_options(
+    heading.align = "left",
+    row_group.border.top.width = px(3),
+    row_group.border.top.color = "black",
+    row_group.border.bottom.color = "black",
+    table_body.hlines.color = "white",
+    table.border.top.color = "#3778bf",
+    table.border.top.width = px(3),
+    table.border.bottom.color = "#3778bf",
+    table.border.bottom.width = px(3),
+    column_labels.border.bottom.color = "black",
+    column_labels.border.bottom.width = px(2),
+    heading.border.bottom.color = "#3778bf",
+    heading.border.bottom.width = px(3)
+  ) 
+```
+
+
+```{r}
+# Create a table with national Cat1 and Cat2 totals by year for IMLS recipients only
+erate_imls %>%
+  filter(!is.na(FSCSKEY)) %>%
+  select(funding_year,
+         chosen_category_of_service,
+         cat2_discount_by_ros,
+         cat1_discount_by_ros_estimated) %>%
+  group_by(funding_year) %>%
+  # Code within summarise is to ensure we keep NAs and that they don't become zeroes
+  summarise(Category1_Commitment = if(all(is.na(cat1_discount_by_ros_estimated))) NA_real_ 
+            else sum(cat1_discount_by_ros_estimated, na.rm = T),
+            Category2_Commitment = if(all(is.na(cat2_discount_by_ros))) NA_real_ 
+            else sum(cat2_discount_by_ros, na.rm = T)) %>%
+  rowwise() %>% 
+  mutate(National_Total = sum(c(Category1_Commitment, Category2_Commitment), na.rm = TRUE))
+```
+
+```{r}
+# Create a table with national Cat1 and Cat2 totals by year for IMLS recipients only broken out
+# into USAC urban rural status
+erate_imls %>%
+  filter(!is.na(FSCSKEY)) %>%
+  select(
+    funding_year,
+    chosen_category_of_service,
+    ros_urban_rural_status,
+    cat2_discount_by_ros,
+    cat1_discount_by_ros_estimated
+  ) %>%
+  group_by(funding_year, ros_urban_rural_status) %>%
+  # Code within summarise is to ensure we keep NAs and that they don't become zeroes
+  summarise(Category1_Commitment = if(all(is.na(cat1_discount_by_ros_estimated))) NA_real_ 
+            else sum(cat1_discount_by_ros_estimated, na.rm = T),
+            Category2_Commitment = if(all(is.na(cat2_discount_by_ros))) NA_real_ 
+            else sum(cat2_discount_by_ros, na.rm = T)) %>%
+  rowwise() %>% 
+  mutate(National_Total = sum(c(Category1_Commitment, Category2_Commitment), na.rm = TRUE))
+```
+
+```{r}
+# Create a table with national Cat1 and Cat2 totals by year for IMLS Outlets only
+imls_outlet_erate %>%
+  select(funding_year,
+         chosen_category_of_service,
+         cat2_discount_by_ros,
+         cat1_discount_by_ros_estimated) %>%
+  group_by(funding_year) %>%
+  # Code within summarise is to ensure we keep NAs and that they don't become zeroes
+  summarise(Category1_Commitment = if(all(is.na(cat1_discount_by_ros_estimated))) NA_real_ 
+            else sum(cat1_discount_by_ros_estimated, na.rm = T),
+            Category2_Commitment = if(all(is.na(cat2_discount_by_ros))) NA_real_ 
+            else sum(cat2_discount_by_ros, na.rm = T)) %>%
+  rowwise() %>% 
+  mutate(National_Total = sum(c(Category1_Commitment, Category2_Commitment), na.rm = TRUE))
+```
+
+```{r}
+# Create a table with national Cat1 and Cat2 totals by year by urban rural status
+# for imls outlets only
+imls_outlet_erate %>%
+  select(
+    funding_year,
+    chosen_category_of_service,
+    ros_urban_rural_status,
+    cat2_discount_by_ros,
+    cat1_discount_by_ros_estimated
+  ) %>%
+  group_by(funding_year, ros_urban_rural_status) %>%
+  # Code within summarise is to ensure we keep NAs and that they don't become zeroes
+  summarise(
+    Category1_Commitment = if (all(is.na(cat1_discount_by_ros_estimated)))
+      NA_real_
+    else
+      sum(cat1_discount_by_ros_estimated, na.rm = T),
+    Category2_Commitment = if (all(is.na(cat2_discount_by_ros)))
+      NA_real_
+    else
+      sum(cat2_discount_by_ros, na.rm = T)
+  ) %>%
+  rowwise() %>%
+  mutate(National_Total = sum(c(
+    Category1_Commitment, Category2_Commitment
+  ), na.rm = TRUE))
+```
+
+```{r}
+# Find out which outlets match to more than one REN (ros entity number)
+imls_outlet_erate %>% 
+  group_by(FSCSKEY, FSCS_SEQ, .drop = F) %>%  
+  summarise(CountRENS = n_distinct(ros_entity_number)) %>% 
+  filter(CountRENS > 1)
+```
+
+```{r}
+# assign the total number of outlets on the dataset to a variable
+total_imls <- (ae_and_outlets %>% summarise(n_distinct(FSCSKEY, FSCS_SEQ)))[[1]]
+```
+
+```{r}
+# What percentage of outlets applied for erate funding in 2019?
+erate_imls %>% 
+  filter(!(is.na(FSCSKEY) & is.na(FSCS_SEQ))) %>%
+  group_by(FSCSKEY, FSCS_SEQ, funding_year, .drop = F) %>% 
+  # To adjust for the fact that some FSCSs have multiple RENs, 
+  # we'll just take the first one that shows up
+  slice_head(n = 1) %>% 
+  ungroup() %>% 
+  group_by(funding_year) %>% 
+  summarise(countRENS = n_distinct(ros_entity_number, na.rm = T),
+           Pct = n_distinct(ros_entity_number, na.rm = T)/total_imls)
+```
+
+```{r}
+erate_imls %>% 
+  filter(!(is.na(FSCSKEY) & is.na(FSCS_SEQ))) %>%
+  group_by(FSCSKEY, FSCS_SEQ, funding_year, .drop = F) %>% 
+  # To adjust for the fact that some FSCSs have multiple RENs, 
+  # we'll just take the first one that shows up
+  slice_head(n = 1) %>% 
+  ungroup() %>% 
+  group_by(funding_year) %>% 
+  summarise(countRENS = n_distinct(ros_entity_number, na.rm = T),
+           Pct = n_distinct(ros_entity_number, na.rm = T)/total_imls) %>% 
+  ggplot(aes(x = funding_year, y = Pct, label = glue("{round(Pct*100, 1)}%"))) +
+  geom_line(color = "#3778bf") +
+  geom_point(color = "#b0054b") +
+  geom_label(vjust = 0, nudge_y = 0.06) +
+  theme_linedraw() +
+  #scale_color_manual(values = c("#3778bf", "#feb209", "#b0054b")) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1), limits = c(0, 1)) +
+  labs(title = "E-rate Participation by IMLS Registered Entities",
+       x = "Funding Year",
+       y = "Pct of Entities Participating",
+       caption = "Total number of IMLS Entities (i.e. the denominator) = 17635\n A Combination of Admin Entities and Outlets")
+
+#ggsave("~/Google Drive/Shared drives/ALA-ERate/Plots/IMLS_Library_Participation_linechart.png")
+```
+
+
+```{r}
+# Chris/Marijke request
+# Chart 1: Percentage of participation per state of IMLS outlets by Category of Service
+# Category 1 only - Category 2 only - Category 1 & 2
+
+# imls_outlet_erate %>%
+#   filter(funding_year == "2019") %>%
+#   group_by(FSCSKEY, FSCS_SEQ, chosen_category_of_service, .drop = F) %>%
+#   slice_head(n = 1) %>%
+#   ungroup() %>%
+#   group_by(STABR, chosen_category_of_service, .drop = F) %>%
+#   summarise(Cnt_of_Outlets_Recving_Erate = n_distinct(ros_entity_number, na.rm = T)) %>%
+#   bind_rows(imls_outlet_erate %>%
+#               filter(funding_year == "2019") %>%
+#               group_by(FSCSKEY, FSCS_SEQ, .drop = F) %>%
+#               mutate(How_Many_Categories = n_distinct(chosen_category_of_service)) %>% 
+#               filter(How_Many_Categories > 1) %>% 
+#               slice_head(n = 1) %>% 
+#               group_by(STABR) %>% 
+#               tally(name = "Cnt_of_Outlets_Recving_Erate") %>% 
+#               mutate(chosen_category_of_service = "Category1AND2")) %>% 
+#   left_join(imls_outlet_erate %>%
+#               group_by(STABR, .drop = F) %>%
+#               summarise(Total_Cnt_Outlets = n_distinct(FSCSKEY, FSCS_SEQ))) %>% 
+#   mutate(Pct_Outlets_Recving_Erate = paste0(round((Cnt_of_Outlets_Recving_Erate / Total_Cnt_Outlets) * 100, 2), "%")) %>%
+#   filter(!is.na(chosen_category_of_service)) %>%
+#   select(STABR, chosen_category_of_service, Pct_Outlets_Recving_Erate) %>% 
+#   pivot_wider(names_from = chosen_category_of_service, values_from = Pct_Outlets_Recving_Erate) %>%
+#   write.csv(paste0("~/Google Drive File Stream/Shared drives/ALA-ERate/Data/2019_Pct_Participation_by_State_by_Category_", Sys.Date(), ".csv"))
+
+imls_outlet_erate %>%
+  filter(funding_year == "2019") %>%
+  group_by(FSCSKEY, FSCS_SEQ, .drop = F) %>%
+  mutate(How_Many_Categories = n_distinct(chosen_category_of_service)) %>% 
+  filter(How_Many_Categories == 1) %>% 
+  slice_head(n = 1) %>% 
+  group_by(STABR, chosen_category_of_service) %>% 
+  tally(name = "Cnt_of_Outlets_Recving_Erate") %>% 
+  bind_rows(imls_outlet_erate %>%
+              filter(funding_year == "2019") %>%
+              group_by(FSCSKEY, FSCS_SEQ, .drop = F) %>%
+              mutate(How_Many_Categories = n_distinct(chosen_category_of_service)) %>% 
+              filter(How_Many_Categories > 1) %>% 
+              slice_head(n = 1) %>% 
+              group_by(STABR) %>% 
+              tally(name = "Cnt_of_Outlets_Recving_Erate") %>% 
+              mutate(chosen_category_of_service = "Category1AND2")) %>% 
+  left_join(imls_outlet_erate %>%
+              group_by(STABR, .drop = F) %>%
+              summarise(Total_Cnt_Outlets = n_distinct(FSCSKEY, FSCS_SEQ))) %>% 
+  mutate(Pct_Outlets_Recving_Erate = paste0(round((Cnt_of_Outlets_Recving_Erate / Total_Cnt_Outlets) * 100, 2), "%")) %>% 
+  select(STABR, chosen_category_of_service, Cnt_of_Outlets_Recving_Erate, Pct_Outlets_Recving_Erate) %>% 
+  pivot_wider(names_from = chosen_category_of_service, values_from = c(Cnt_of_Outlets_Recving_Erate, Pct_Outlets_Recving_Erate)) #%>% 
+  #write.csv(paste0("~/Google Drive File Stream/Shared drives/ALA-ERate/Data/2019_Pct_Participation_by_State_by_Category_", Sys.Date(), ".csv"))
+
+```
+
+```{r}
+imls_outlet_erate %>%
+  filter(funding_year == "2019") %>%
+  group_by(FSCSKEY, FSCS_SEQ, .drop = F) %>%
+  mutate(How_Many_Categories = n_distinct(chosen_category_of_service)) %>% 
+  filter(How_Many_Categories > 1) %>% 
+  slice_head(n = 1) %>% 
+  group_by(STABR) %>% 
+  tally(name = "Cnt_of_Outlets_Recving_Erate") %>% 
+  mutate(chosen_category_of_service = "Category1AND2")
+```
+
+```{r}
+# Chris/Marijke request
+# Chart 1: Percentage of participation per state of IMLS outlets by Category of Service
+# Category 1 only - Category 2 only - Category 1 & 2
+imls_outlet_erate %>%
+  filter(funding_year == "2019") %>%
+  group_by(FSCSKEY, FSCS_SEQ, .drop = F) %>%
+  slice_head(n = 1) %>%
+  ungroup() %>%
+  group_by(STABR, .drop = F) %>%
+  summarise(Cnt_of_Outlets_Recving_Erate = n_distinct(ros_entity_number, na.rm = T)) %>%
+  left_join(imls_outlet_erate %>%
+              group_by(STABR, .drop = F) %>%
+              summarise(Total_Cnt_Outlets = n_distinct(FSCSKEY, FSCS_SEQ))) %>%
+  mutate(PctParticipating = paste0(round((Cnt_of_Outlets_Recving_Erate / Total_Cnt_Outlets) * 100, 2), "%")) #%>% 
+  #write.csv(paste0("~/Google Drive File Stream/Shared drives/ALA-ERate/Data/2019_Pct_Participation_by_State_", Sys.Date(), ".csv"))
+```
+
+```{r}
+# Chris/Marijke request
+# Chart 2: Percentage of Participation per state of IMLS outlets by Category of Service
+# Consortium/  Library / Library System
+# Category 1 only - Category 2 only - Category 1 & 2
+
+imls_outlet_erate %>%
+  filter(funding_year == "2019") %>%
+  group_by(FSCSKEY, FSCS_SEQ, ros_entity_number, chosen_category_of_service, .drop = F) %>%
+  slice_head(n = 1) %>% 
+  ungroup() %>%
+  group_by(STABR, chosen_category_of_service, .drop = F) %>%
+  summarise(n_distinct(ros_entity_number, na.rm = T)) #%>% write.csv(paste0("~/Google Drive File Stream/Shared drives/ALA-ERate/Data/2019_Unique_Entities_by_State_by_Category_", Sys.Date(), ".csv"))
+```
+
+```{r}
+# Chris/Marijke request
+# Chart 2: Percentage of Participation per state of IMLS outlets by Category of Service
+# Consortium/  Library / Library System
+# Category 1 only - Category 2 only - Category 1 & 2
+
+imls_outlet_erate %>%
+  filter(funding_year == "2019") %>%
+  group_by(FSCSKEY, FSCS_SEQ, chosen_category_of_service, form_471_service_type_name, form_471_function_name, form_471_product_name, .drop = F) %>%
+  slice_head(n = 1) %>% 
+  ungroup() %>%
+  group_by(chosen_category_of_service, form_471_service_type_name, form_471_function_name, form_471_product_name, .drop = F) %>%
+  summarise(n_distinct(ros_entity_number, na.rm = T)) #%>% 
+  #write.csv(paste0("~/Google Drive File Stream/Shared drives/ALA-ERate/Data/2019_Service_Products_IMLS_Outlets_", Sys.Date(), ".csv"))
+```
+
+```{r}
+# Chris/Marijke request
+# Chart 2: Percentage of Participation per state of IMLS outlets by Category of Service
+# Consortium/  Library / Library System
+# Category 1 only - Category 2 only - Category 1 & 2
+
+imls_outlet_erate %>%
+  group_by(FSCSKEY, FSCS_SEQ, chosen_category_of_service, form_471_service_type_name, form_471_function_name, form_471_product_name, .drop = F) %>%
+  slice_head(n = 1) %>% 
+  ungroup() %>%
+  group_by(chosen_category_of_service, form_471_service_type_name, form_471_function_name, form_471_product_name, funding_year, .drop = F) %>%
+  summarise(n_distinct(ros_entity_number, na.rm = T)) #%>% 
+  #write.csv(paste0("~/Google Drive File Stream/Shared drives/ALA-ERate/Data/AllYears_Service_Products_IMLS_Outlets_", Sys.Date(), ".csv"))
+```
+
+```{r}
+# imls_outlet_erate %>%
+#   filter(funding_year == "2019") %>%
+#   group_by(FSCSKEY, FSCS_SEQ, chosen_category_of_service, .drop = F) %>%
+#   slice_head(n = 1) %>%
+#   ungroup() %>%
+#   group_by(STABR, chosen_category_of_service, .drop = F) %>%
+#   summarise(Cnt_of_Outlets_Recving_Erate = n_distinct(ros_entity_number, na.rm = T)) %>%
+#   bind_rows(imls_outlet_erate %>%
+#               filter(funding_year == "2019") %>%
+#               group_by(FSCSKEY, FSCS_SEQ, .drop = F) %>%
+#               mutate(How_Many_Categories = n_distinct(chosen_category_of_service)) %>% 
+#               filter(How_Many_Categories > 1) %>% 
+#               slice_head(n = 1) %>% 
+#               group_by(STABR, .drop = F) %>% 
+#               tally(name = "Cnt_of_Outlets_Recving_Erate") %>% 
+#               mutate(chosen_category_of_service = "Category1AND2")) %>% 
+#   left_join(imls_outlet_erate %>%
+#               group_by(STABR, .drop = F) %>%
+#               summarise(Total_Cnt_Outlets = n_distinct(FSCSKEY, FSCS_SEQ))) %>% 
+#   mutate(Pct_Outlets_Recving_Erate = paste0(round((Cnt_of_Outlets_Recving_Erate / Total_Cnt_Outlets) * 100, 2), "%")) %>%
+#   filter(!is.na(chosen_category_of_service))
+```
+
+```{r}
+# Chris/Marijke request
+# Chart 2: Percentage of Participation per state of IMLS outlets by Category of Service
+# Consortium/  Library / Library System
+# Category 1 only - Category 2 only - Category 1 & 2
+
+imls_outlet_erate %>%
+  filter(funding_year == "2019") %>%
+  group_by(FSCSKEY, FSCS_SEQ, chosen_category_of_service, .drop = F) %>%
+  slice_head(n = 1) %>%
+  ungroup() %>%
+  group_by(STABR, chosen_category_of_service, .drop = F) %>%
+  mutate(Cnt_of_Outlets_Recving_Erate_by_Cat = n_distinct(ros_entity_number, na.rm = T)) %>% 
+  ungroup() %>%
+  group_by(STABR,
+           chosen_category_of_service,
+           organization_entity_type_name,
+           Cnt_of_Outlets_Recving_Erate_by_Cat,
+           .drop = F) %>%
+  summarise(Cnt_of_Outlets_Recving_Erate_by_Org = n_distinct(ros_entity_number, na.rm = T)) %>%
+  mutate(PctApplyingAs = paste0(round((Cnt_of_Outlets_Recving_Erate_by_Org / Cnt_of_Outlets_Recving_Erate_by_Cat) * 100, 2), "%")) #%>% 
+  #write.csv(paste0("~/Google Drive File Stream/Shared drives/ALA-ERate/Data/2019_Pct_Participation_by_State_by_Category_by_OrgType_", Sys.Date(), ".csv"))
+```
+
+```{r}
+# Chris/Marijke request
+# Chart 2: Percentage of Participation per state of IMLS outlets by Category of Service
+# Consortium/  Library / Library System
+# Category 1 only - Category 2 only - Category 1 & 2
+
+imls_outlet_erate %>%
+  filter(funding_year == "2019") %>%
+  group_by(FSCSKEY, FSCS_SEQ, chosen_category_of_service, .drop = F) %>%
+  slice_head(n = 1) %>%
+  ungroup() %>%
+  group_by(STABR, chosen_category_of_service, .drop = F) %>%
+  mutate(Cnt_of_Outlets_Recving_Erate_by_Cat = n_distinct(ros_entity_number, na.rm = T)) %>% 
+  ungroup() %>%
+  group_by(STABR,
+           chosen_category_of_service,
+           organization_entity_type_name,
+           Cnt_of_Outlets_Recving_Erate_by_Cat,
+           .drop = F) %>%
+  summarise(Cnt_of_Outlets_Recving_Erate_by_Org = n_distinct(ros_entity_number, na.rm = T)) %>%
+  mutate(PctApplyingAs = Cnt_of_Outlets_Recving_Erate_by_Org / Cnt_of_Outlets_Recving_Erate_by_Cat) %>%
+  ggplot(aes(x = chosen_category_of_service, y = PctApplyingAs)) +
+  # preserve = single makes each bar the same width
+  geom_bar(aes(fill = organization_entity_type_name), 
+           position = position_dodge(preserve = "single"), 
+           stat = "identity",
+           color="black") +
+  theme_linedraw() +
+  labs(title = "How IMLS Outlets Applied for Erate in 2019",
+       subtitle = "by State and Category of Service",
+       y = "Percentage of Total Applying \nWithin State and Category", 
+       x = "Category of Service",
+       fill = "Org. Type") +
+  scale_y_continuous(breaks=c(0, .25, .50, .75, 1), limits = c(0, 1), labels = scales::percent) +
+  scale_fill_manual(values = c("#3778bf", "#feb209", "#b0054b")) +
+  facet_wrap(~ STABR, ncol = 5, drop = FALSE) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5))
+
+ggsave(paste0("~/Google Drive File Stream/Shared drives/ALA-ERate/Plots/2019_Pct_Participation_by_State_by_Category_by_OrgType_", Sys.Date(), ".pdf"), width = 8, height = 16.5, units = "in")
+```
+
+```{r}
+# Create a table to show which service type is associated with which category
+erate_libs %>%
+  distinct(chosen_category_of_service, form_471_service_type_name)
+```
+
+```{r}
+# Create a table with national Cat1 and Cat2 totals by year, service type, and function
+erate_libs %>%
+  select(
+    funding_year,
+    chosen_category_of_service,
+    form_471_service_type_name,
+    form_471_function_name,
+    cat2_discount_by_ros,
+    cat1_discount_by_ros_estimated
+  ) %>%
+  group_by(funding_year,
+           form_471_service_type_name,
+           form_471_function_name) %>%
+  # Code within summarise is to ensure we keep NAs and that they don't become zeroes
+  summarise(
+    Category1_Commitment = if (all(is.na(cat1_discount_by_ros_estimated)))
+      NA_real_
+    else
+      sum(cat1_discount_by_ros_estimated, na.rm = T),
+    Category2_Commitment = if (all(is.na(cat2_discount_by_ros)))
+      NA_real_
+    else
+      sum(cat2_discount_by_ros, na.rm = T)
+  ) %>%
+  rowwise() %>%
+  mutate(National_Total = sum(c(
+    Category1_Commitment, Category2_Commitment
+  ), na.rm = TRUE))
+```
+
+```{r}
+# Category 1 service type & function totals over time
+erate_libs %>%
+  filter(chosen_category_of_service == "Category1") %>% 
+  select(funding_year, form_471_service_type_name, form_471_function_name,  cat2_discount_by_ros, cat1_discount_by_ros_estimated) %>%
+  group_by(funding_year, form_471_service_type_name, form_471_function_name) %>%
+  summarise(Commitment = sum(cat1_discount_by_ros_estimated, na.rm=T)) %>% 
+  pivot_wider(names_from = funding_year, values_from = Commitment)
+```
+
+```{r}
+# Category 2 service type & function totals over time
+erate_libs %>%
+  filter(chosen_category_of_service == "Category2") %>% 
+  select(funding_year, form_471_service_type_name, form_471_function_name,  cat2_discount_by_ros, cat1_discount_by_ros_estimated) %>%
+  group_by(funding_year, form_471_service_type_name, form_471_function_name) %>%
+  summarise(Commitment = sum(cat2_discount_by_ros, na.rm = T)) %>% 
+  pivot_wider(names_from = funding_year, values_from = Commitment)
+```
+
+```{r}
+# Create a table with national Cat1 and Cat2 totals by year
+erate_libs %>%
+  mutate(Commitment = case_when(
+    is.na(cat1_discount_by_ros_estimated) ~ cat2_discount_by_ros,
+    is.na(cat2_discount_by_ros) ~ cat1_discount_by_ros_estimated
+  )) %>% 
+  select(
+    funding_year,
+    form_471_service_type_name,
+    Commitment
+  ) %>%
+  group_by(funding_year,
+           form_471_service_type_name) %>%
+  summarise(Commitment = sum(Commitment, na.rm = T)) %>%
+  mutate(Pct = Commitment / sum(Commitment)) %>% 
+  pivot_wider(names_from = funding_year, values_from = c(Commitment, Pct), names_sort = T) %>% 
+  relocate(form_471_service_type_name, Commitment_2016, Pct_2016, Commitment_2017, Pct_2017, Commitment_2018, Pct_2018, Commitment_2019, Pct_2019, Commitment_2020, Pct_2020) %>% 
+  arrange(desc(Pct_2016)) %>% 
+  janitor::adorn_totals("row") %>%  # https://stackoverflow.com/a/49819006/5593458
+  gt() %>% #https://themockup.blog/posts/2020-09-04-10-table-rules-in-r/
+  # https://themockup.blog/posts/2020-05-16-gt-a-grammer-of-tables/
+  fmt_currency(
+    columns = vars(Commitment_2016, Commitment_2017, Commitment_2018, Commitment_2019, Commitment_2020),
+    currency = "USD"
+  ) %>% 
+  fmt_percent(
+    columns = vars(Pct_2016, Pct_2017, Pct_2018, Pct_2019, Pct_2020),
+    scale_values = T
+  ) %>%
+  cols_align(align = "left",
+             columns = 'form_471_service_type_name') %>%
+  cols_align(align = "right",
+             columns = vars(Commitment_2016, Pct_2016, Commitment_2017, Pct_2017, Commitment_2018, Pct_2018, Commitment_2019, Pct_2019, Commitment_2020, Pct_2020)) %>% 
+  # cols_width(vars(ros_urban_rural_status) ~ px(90),
+  #            vars(Category1_Commitment, Category2_Commitment, National_Total) ~ px(170)
+  # ) %>% 
+  cols_label(
+    form_471_service_type_name = "Service Type",
+    Commitment_2016 = "Yearly Total",
+    Pct_2016 = "%",
+    Commitment_2017 = "Yearly Total", 
+    Pct_2017 = "%",
+    Commitment_2018 = "Yearly Total", 
+    Pct_2018 = "%", 
+    Commitment_2019 = "Yearly Total", 
+    Pct_2019 = "%", 
+    Commitment_2020 = "Yearly Total", 
+    Pct_2020 = "%"
+  ) %>% 
+  tab_header(
+    title = md("**National Summary of Service Type Commitments**")
+    ) %>% 
+  tab_spanner(
+    label = "2016",
+    columns = c(2:3)
+  ) %>% 
+  tab_spanner(
+    label = "2017",
+    columns = c(4:5)
+  ) %>% 
+  tab_spanner(
+    label = "2018",
+    columns = c(6:7)
+  ) %>% 
+  tab_spanner(
+    label = "2019",
+    columns = c(8:9)
+  ) %>% 
+  tab_spanner(
+    label = "2020",
+    columns = c(10:11)
+  ) %>% 
+   tab_style(
+    style = cell_fill(
+      color = "#E8E8E8"
+    ),
+    locations = list(
+      cells_body(
+        columns = vars(Pct_2016, Pct_2017, Pct_2018, Pct_2019, Pct_2020)
+        ),
+      cells_column_labels(
+        columns = vars(Pct_2016, Pct_2017, Pct_2018, Pct_2019, Pct_2020)
+      )
+      )
+  ) %>%
+  tab_style(
+    style = cell_borders(
+      sides = "top",
+      color = "black",
+      weight = px(2)
+    ),
+    locations = cells_body(
+      columns = everything(),
+      rows = form_471_service_type_name == "Total"
+    )
+  ) %>% 
+  opt_table_lines(extent = "default") %>%
+  tab_options(
+    heading.align = "left",
+    row_group.border.top.width = px(3),
+    row_group.border.top.color = "black",
+    row_group.border.bottom.color = "black",
+    table_body.hlines.color = "white",
+    table.border.top.color = "#3778bf",
+    table.border.top.width = px(3),
+    table.border.bottom.color = "#3778bf",
+    table.border.bottom.width = px(3),
+    column_labels.border.bottom.color = "black",
+    column_labels.border.bottom.width = px(2),
+    heading.border.bottom.color = "#3778bf",
+    heading.border.bottom.width = px(3)
+  ) 
+```
+
+```{r}
+# National totals of IMLS Outlets
+imls_outlet_erate %>%
+  select(funding_year, chosen_category_of_service, cat2_discount_by_ros, cat1_discount_by_ros_estimated) %>%
+  filter(!is.na(funding_year)) %>% 
+  group_by(funding_year) %>%
+  summarise(Category1_Commitment = sum(cat1_discount_by_ros_estimated, na.rm=T),
+            Category2_Commitment = sum(cat2_discount_by_ros, na.rm = T),
+            National_Total = Category1_Commitment + Category2_Commitment)
+```
+
+```{r}
+# National totals of IMLS AEs
+imls_ae_erate %>%
+  select(funding_year, chosen_category_of_service, cat2_discount_by_ros, cat1_discount_by_ros_estimated) %>%
+  filter(!is.na(funding_year)) %>% 
+  group_by(funding_year) %>%
+  summarise(Category1_Commitment = sum(cat1_discount_by_ros_estimated, na.rm=T),
+            Category2_Commitment = sum(cat2_discount_by_ros, na.rm = T),
+            National_Total = Category1_Commitment + Category2_Commitment)
+```
+
+```{r}
+# List all the entities
+erate_libs %>%
+  mutate(ros_entity_name = str_to_upper(ros_entity_name),
+         ros_physical_city = str_to_upper(ros_physical_city)) %>%
+  tidyr::unite(col = "lib_city_state", 
+               c(ros_entity_name, ros_physical_city, ros_physical_state), 
+               sep = ", ", 
+               remove = FALSE) %>%
+  distinct(lib_city_state) %>%
+  arrange(lib_city_state)
+```
+
+```{r}
+# Create a table of sum discounts that can be filtered by congressional district
+erate_libs %>% 
+  select(ros_physical_state, ros_congressional_district, funding_year, chosen_category_of_service, cat2_discount_by_ros, cat1_discount_by_ros_estimated) %>%
+  mutate(ros_congressional_district = factor(ros_congressional_district, levels = stringr::str_sort(unique(ros_congressional_district), numeric = TRUE))) %>% 
+  group_by(funding_year, ros_congressional_district, ros_physical_state) %>%
+  summarise(sum_cat1_discount = sum(cat1_discount_by_ros_estimated, na.rm=T),
+            sum_cat2_allocation = sum(cat2_discount_by_ros, na.rm = T),
+            cong_dist_total = sum_cat1_discount + sum_cat2_allocation) %>%
+  select(ros_congressional_district, ros_physical_state, funding_year, cong_dist_total) %>% 
+  pivot_wider(names_from = funding_year, values_from = cong_dist_total) %>% 
+  filter(ros_physical_state == "VI")
+```
+
+```{r}
+erate_libs %>% 
+  select(ros_entity_number, organization_entity_type_name, funding_year, chosen_category_of_service, cat2_discount_by_ros, cat1_discount_by_ros_estimated) %>%
+  group_by(funding_year, organization_entity_type_name) %>%
+  summarise(sum_cat1_discount = sum(cat1_discount_by_ros_estimated, na.rm=T),
+            sum_cat2_allocation = sum(cat2_discount_by_ros, na.rm = T),
+            org_type_total = sum_cat1_discount + sum_cat2_allocation,
+            total_entities = n_distinct(ros_entity_number)) %>% 
+  select(funding_year, organization_entity_type_name, org_type_total, total_entities) %>% 
+  pivot_wider(names_from = organization_entity_type_name, values_from = org_type_total) #%>% 
+  #write.csv("~/Google Drive File Stream/Shared drives/ALA-ERate/Data/Totals_by_Org_Type_by_Year.csv")
+```
+
+```{r}
+erate_libs %>% 
+  select(ros_entity_number, organization_entity_type_name, funding_year, chosen_category_of_service, cat2_discount_by_ros, cat1_discount_by_ros_estimated) %>%
+  group_by(funding_year, organization_entity_type_name) %>%
+  summarise(sum_cat1_discount = sum(cat1_discount_by_ros_estimated, na.rm=T),
+            sum_cat2_allocation = sum(cat2_discount_by_ros, na.rm = T),
+            org_type_total = sum_cat1_discount + sum_cat2_allocation,
+            total_entities = n_distinct(ros_entity_number),
+            per_entity_commitment = org_type_total/total_entities) %>% 
+  select(funding_year, organization_entity_type_name, org_type_total, total_entities, per_entity_commitment) 
+  #pivot_wider(names_from = organization_entity_type_name, values_from = c('org_type_total', 'total_entities', 'per_entity_commitment')) #%>% 
+  #write.csv("~/Google Drive File Stream/Shared drives/ALA-ERate/Data/Totals_by_Org_Type_by_Year.csv")
+```
+
+```{r}
+# Number of unique participants by entity type (library, lib system, or con) per year from 2016-2020
+erate_libs %>% 
+  select(ros_entity_number, organization_entity_type_name, funding_year) %>%
+  group_by(funding_year, organization_entity_type_name) %>%
+  summarise(total_entities = n_distinct(ros_entity_number)) %>% 
+  pivot_wider(names_from = organization_entity_type_name, values_from = total_entities)
+```
+
+```{r}
+# Number of unique library entities per year from 2016-2020
+erate_libs %>% 
+  select(ros_entity_number, funding_year) %>%
+  group_by(funding_year) %>%
+  summarise(total_entities = n_distinct(ros_entity_number)) 
+```
+
+```{r}
+# Why do the total unique RENs differ when we group by org entity type or not?
+
+```
+
+
+```{r}
+erate_libs %>%
+  select(
+    ros_entity_number,
+    organization_entity_type_name,
+    funding_year,
+    chosen_category_of_service,
+    cat2_discount_by_ros,
+    cat1_discount_by_ros_estimated
+  ) %>%
+  group_by(funding_year, organization_entity_type_name) %>%
+  summarise(
+    sum_cat1_discount = sum(cat1_discount_by_ros_estimated, na.rm = T),
+    sum_cat2_allocation = sum(cat2_discount_by_ros, na.rm = T),
+    org_type_total = sum_cat1_discount + sum_cat2_allocation,
+    total_entities = n_distinct(ros_entity_number),
+    per_entity_commitment = org_type_total / total_entities
+  ) %>%
+  select(
+    funding_year,
+    organization_entity_type_name,
+    org_type_total,
+    total_entities,
+    per_entity_commitment
+  ) %>%
+  ggplot(aes(x = funding_year, y = per_entity_commitment)) +
+  geom_bar(
+    aes(fill = reorder(organization_entity_type_name, -per_entity_commitment)),
+    color = "black",
+    size = 0.2,
+    stat = "identity",
+    position = "dodge"
+  ) +
+  theme_linedraw() +
+  #scale_fill_jcolors(palette = "pal5") +
+  scale_fill_manual(values = c("#3778bf", "#feb209", "#b0054b")) +
+  scale_y_continuous(labels = scales::dollar_format()) +
+  labs(title = "Per Recipient Funding Commitment by Organization Type",
+       #subtitle = "IMLS City Size Designation & E-Rate Designation",
+       fill = "Organization Type",
+       x = "Funding Year",
+       y = "Commitment Per Recipient")
+
+#ggsave("~/Google Drive File Stream/Shared drives/ALA-ERate/Plots/All_Library_Recipient_Funding_by_Org_Type.png")
+```
+
+```{r}
+erate_libs %>%
+  select(
+    ros_entity_number,
+    organization_entity_type_name,
+    funding_year,
+    chosen_category_of_service,
+    cat2_discount_by_ros,
+    cat1_discount_by_ros_estimated
+  ) %>%
+  group_by(funding_year, organization_entity_type_name) %>%
+  summarise(
+    sum_cat1_discount = sum(cat1_discount_by_ros_estimated, na.rm = T),
+    sum_cat2_allocation = sum(cat2_discount_by_ros, na.rm = T),
+    org_type_total = sum_cat1_discount + sum_cat2_allocation,
+    total_entities = n_distinct(ros_entity_number),
+    per_entity_commitment = org_type_total / total_entities
+  ) %>%
+  select(
+    funding_year,
+    organization_entity_type_name,
+    org_type_total,
+    total_entities,
+    per_entity_commitment
+  ) %>%
+  ggplot(aes(x = funding_year, y = per_entity_commitment)) +
+  geom_bar(
+    aes(fill = reorder(organization_entity_type_name, -per_entity_commitment)),
+    color = "black",
+    size = 0.4,
+    stat = "identity",
+    position = "dodge"
+  ) +
+  theme_linedraw() +
+  scale_fill_manual(values = c("#484848", "#A9A9A9", "#DCDCDC")) +
+  scale_y_continuous(labels = scales::dollar_format()) +
+  labs(title = "Average Per Recipient Funding Commitment by Application Type",
+       #subtitle = "IMLS City Size Designation & E-Rate Designation",
+       fill = "Application Type",
+       x = "Funding Year",
+       y = "Commitment Per Recipient")
+
+ggsave("~/Google Drive File Stream/Shared drives/ALA-ERate/Plots/Recipient_Funding_by_Org_Type.png")
+```
+
+```{r}
+erate_libs %>%
+  select(
+    ros_entity_number,
+    ros_urban_rural_status,
+    funding_year,
+    cat2_discount_by_ros,
+    cat1_discount_by_ros_estimated
+  ) %>%
+  group_by(funding_year, ros_urban_rural_status) %>%
+  summarise(
+    sum_cat1_discount = sum(cat1_discount_by_ros_estimated, na.rm = T),
+    sum_cat2_allocation = sum(cat2_discount_by_ros, na.rm = T),
+    geog_type_total = round(sum_cat1_discount + sum_cat2_allocation, 2),
+    total_entities = n_distinct(ros_entity_number),
+    per_entity_commitment = round(geog_type_total / total_entities, 2)
+  ) %>%
+  select(
+    funding_year,
+    ros_urban_rural_status,
+    geog_type_total,
+    total_entities,
+    per_entity_commitment
+  )
+```
+
+
+```{r}
+erate_libs %>%
+  filter(!is.na(ros_urban_rural_status)) %>% 
+  select(
+    ros_entity_number,
+    ros_urban_rural_status,
+    funding_year,
+    cat2_discount_by_ros,
+    cat1_discount_by_ros_estimated
+  ) %>%
+  group_by(funding_year, ros_urban_rural_status) %>%
+  summarise(
+    sum_cat1_discount = sum(cat1_discount_by_ros_estimated, na.rm = T),
+    sum_cat2_allocation = sum(cat2_discount_by_ros, na.rm = T),
+    geog_type_total = sum_cat1_discount + sum_cat2_allocation,
+    total_entities = n_distinct(ros_entity_number),
+    per_entity_commitment = geog_type_total / total_entities
+  ) %>%
+  select(
+    funding_year,
+    ros_urban_rural_status,
+    geog_type_total,
+    total_entities,
+    per_entity_commitment
+  ) %>%
+  ggplot(aes(x = funding_year, y = per_entity_commitment)) +
+  geom_bar(
+    aes(fill = reorder(ros_urban_rural_status, -per_entity_commitment)),
+    color = "black",
+    size = 0.4,
+    stat = "identity",
+    position = "dodge"
+  ) +
+  theme_linedraw() +
+  scale_fill_manual(values = c("#484848", "#A9A9A9", "#DCDCDC")) +
+  scale_y_continuous(labels = scales::dollar_format()) +
+  labs(title = "Average Per Recipient Funding Commitment by Location Type",
+       #subtitle = "IMLS City Size Designation & E-Rate Designation",
+       fill = "Location Type",
+       x = "Funding Year",
+       y = "Commitment Per Recipient")
+
+ggsave("~/Google Drive File Stream/Shared drives/ALA-ERate/Plots/Recipient_Funding_by_Geog.png")
+```
+
+```{r}
+# Same as above but just for imls_outlets
+imls_outlet_erate %>%
+  select(
+    ros_entity_number,
+    organization_entity_type_name,
+    funding_year,
+    chosen_category_of_service,
+    cat2_discount_by_ros,
+    cat1_discount_by_ros_estimated
+  ) %>%
+  group_by(funding_year, organization_entity_type_name) %>%
+  summarise(
+    sum_cat1_discount = sum(cat1_discount_by_ros_estimated, na.rm = T),
+    sum_cat2_allocation = sum(cat2_discount_by_ros, na.rm = T),
+    org_type_total = sum_cat1_discount + sum_cat2_allocation,
+    total_entities = n_distinct(ros_entity_number),
+    per_entity_commitment = org_type_total / total_entities
+  ) %>%
+  select(
+    funding_year,
+    organization_entity_type_name,
+    org_type_total,
+    total_entities,
+    per_entity_commitment
+  ) %>%
+  ggplot(aes(x = funding_year, y = per_entity_commitment)) +
+  geom_bar(
+    aes(fill = reorder(organization_entity_type_name, -per_entity_commitment)),
+    color = "black",
+    size = 0.2,
+    stat = "identity",
+    position = "dodge"
+  ) +
+  theme_linedraw() +
+  scale_fill_manual(values = c("#3778bf", "#feb209", "#b0054b"), na.translate=FALSE) +
+  scale_y_continuous(labels = scales::dollar_format()) +
+  labs(title = "Per Recipient Funding Commitment by Organization Type",
+       subtitle = "for IMLS Outlets that Received ERate Commitments",
+       fill = "Organization Type",
+       x = "Funding Year",
+       y = "Commitment Per Recipient")
+
+ggsave("~/Google Drive File Stream/Shared drives/ALA-ERate/Plots/IMLS_Outlet_Recipient_Funding_by_Org_Type.png")
+```
+
+```{r}
+# How many entities are rural vs urban
+erate_imls %>%
+  group_by(ros_entity_number) %>%
+  slice(1) %>%
+  group_by(ros_urban_rural_status) %>%
+  count()
+```
+
+```{r}
+# How much is committed based on rural vs urban
+erate_imls %>%
+  group_by(funding_year, ros_urban_rural_status) %>%
+  summarise(Cat1Total_Commitment = round(sum(cat1_discount_by_ros_estimated, na.rm=T), 1),
+            Cat2Total_Commitment = round(sum(cat2_discount_by_ros, na.rm=T), 1),
+            Total_Commitment = Cat1Total_Commitment + Cat2Total_Commitment) %>% 
+  select(-Cat1Total_Commitment, -Cat2Total_Commitment) %>% 
+  pivot_wider(names_from = ros_urban_rural_status, values_from = Total_Commitment) 
+```
+
+```{r}
+# Visualize how the IMLS size designation compares to the E-Rate size designation
+erate_imls %>%
+  group_by(ros_entity_number) %>%
+  arrange(funding_year) %>%
+  slice(1) %>%
+  group_by(LOCALE_ADD_DESCR, ros_urban_rural_status) %>%
+  count(name = "CountEntities") %>%
+  ggplot(aes(x = CountEntities, y = LOCALE_ADD_DESCR, fill = ros_urban_rural_status)) +
+  geom_col(color = "black", size = 0.2) +
+  theme_linedraw() +
+  scale_fill_manual(values = c("#3778bf", "#feb209", "#b0054b"), na.value = "#d7d7ef") +
+  labs(
+    title = "Count of Entities",
+    subtitle = "IMLS City Size Designation & E-Rate Designation",
+    fill = "E-Rate Designation",
+    caption = "NA = No Data Available"
+  ) +
+  xlab("Number of Entities") +
+  ylab("IMLS Designation")
+
+#ggsave("~/Google Drive File Stream/Shared drives/ALA-ERate/Plots/Entities_by_LOCALE_and_ROS_SIZE.png")
+```
+
+```{r}
+# Cat 1 and Cat 2 Funding by IMLS Size for 2019
+erate_imls %>%
+  select(LOCALE_ADD_DESCR, funding_year, chosen_category_of_service, cat2_discount_by_ros, cat1_discount_by_ros_estimated) %>%
+  filter(funding_year == "2019") %>%
+  group_by(LOCALE_ADD_DESCR) %>%
+  summarise(Category1_Commitment = round(sum(cat1_discount_by_ros_estimated, na.rm=T), 2),
+            Category2_Commitment = round(sum(cat2_discount_by_ros, na.rm = T), 2),
+            Total = round(Category1_Commitment + Category2_Commitment, 2)) %>%
+  mutate(Pct_of_Lib_Funding = round((Total / sum(Total))*100, 2)) %>%
+  arrange(desc(Pct_of_Lib_Funding))
+```
+
+```{r}
+# Cat 1 and Cat 2 Funding by E-Rate Size for 2019
+erate_imls %>% 
+  select(ros_urban_rural_status, funding_year, chosen_category_of_service, cat2_discount_by_ros, cat1_discount_by_ros_estimated) %>%
+  filter(funding_year == "2019") %>%
+  group_by(ros_urban_rural_status) %>%
+  summarise(Category1_Commitment = round(sum(cat1_discount_by_ros_estimated, na.rm = T), 2),
+            Category2_Commitment = round(sum(cat2_discount_by_ros, na.rm = T), 2),
+            Total = round(Category1_Commitment + Category2_Commitment, 2)) %>%
+  mutate(Pct_of_Lib_Funding = round((Total / sum(Total))*100, 2)) %>%
+  arrange(desc(Pct_of_Lib_Funding))
+```
+
+```{r}
+# Total commitment by year by entity - currently filtered to IA
+erate_libs %>%
+  select(ros_entity_number, ros_entity_name, ros_physical_state, funding_year, 
+         chosen_category_of_service, cat2_discount_by_ros, cat1_discount_by_ros_estimated) %>%
+  filter(ros_physical_state == "IA") %>%
+  group_by(ros_entity_number, ros_entity_name, funding_year) %>%
+  summarise(Category1_Commitment = round(sum(cat1_discount_by_ros_estimated, na.rm = T), 2),
+            Category2_Commitment = round(sum(cat2_discount_by_ros, na.rm = T), 2),
+            Entity_Total = round(Category1_Commitment + Category2_Commitment, 2)) %>%
+  select(ros_entity_number, ros_entity_name, funding_year, 
+         Entity_Total) %>%
+  arrange(funding_year) %>% 
+  pivot_wider(names_from = funding_year, values_from = Entity_Total)
+```
+
+# How many of the IMLS outlets are participating in ERate?
+
+```{r}
+imls_outlet_erate %>%
+  filter(STATSTRU != 3) %>% # filter out the closed libraries
+  group_by(FSCSKEY, FSCS_SEQ) %>%
+  slice(1) %>%
+  ungroup() %>%
+  group_by(STABR) %>%
+  summarise(Total_Count = n_distinct(FSCSKEY, FSCS_SEQ),
+            ERate_Count = n_distinct(ros_entity_number, na.rm = T),
+            NA_Count = sum(is.na(ros_entity_number)),
+            Portion_Participating = ERate_Count / Total_Count) #%>%
+  #write.csv("~/Google Drive File Stream/Shared drives/ALA-ERate/Data/2018IMLS_Outlets_Participating_in_ERate_by_State.csv")
+```
+
+```{r}
+imls_ae_erate %>%
+  filter(STATSTRU != 3) %>% # filter out the closed libraries
+  group_by(FSCSKEY, FSCS_SEQ) %>%
+  slice(1) %>%
+  ungroup() %>%
+  group_by(STABR) %>%
+  summarise(Total_Count = n_distinct(FSCSKEY, FSCS_SEQ),
+            ERate_Count = n_distinct(ros_entity_number, na.rm = T),
+            NA_Count = sum(is.na(ros_entity_number)),
+            Portion_Participating = ERate_Count / Total_Count) #%>%
+  #write.csv("~/Google Drive File Stream/Shared drives/ALA-ERate/Data/2018IMLS_AEs_Participating_in_ERate_by_State.csv")
+```
+
+# Disbursement Analysis
+
+```{r}
+# erate_libs %>%
+#   left_join(disbursement %>% 
+#               filter(form_version == "Current") %>%
+#               select(application_number, funding_year, state, ben, organization_name, funding_request_number,
+#                      form_471_service_type_name, form_version, total_authorized_disbursement, funding_commitment_request),
+#             by = c("application_number", "organization_name", "funding_year", "funding_request_number", "form_471_service_type_name")
+#             ) %>% 
+#   distinct(application_number, funding_year, organization_name, form_471_service_type_name, .keep_all = T) %>% 
+#   select(-ros_entity_number:-ros_number_of_nslp_students, -count_ros, -cat1_discount_by_ros_estimated, -cat2_discount_by_ros) %>% 
+#   mutate(pct_of_committed_received = total_authorized_disbursement/post_discount_extended_eligible_line_item_costs) %>% 
+#   filter(org_city == "OLYMPIA")
+  #write.csv("~/Google Drive File Stream/Shared drives/ALA-ERate/Data/Lorenzo.csv")
+```
+
+Lorenzo's methodology:
+
+To confirm the tables that you are using, I am assuming that the ‘commitment table’ is the E-rate Recipient Details And Commitments dataset https://opendata.usac.org/E-rate/E-rate-Recipient-Details-And-Commitments/avi8-svp9 and the ‘disbursement table’ is the E-rate Request for Discount on Services: FRN Status (FCC Form 471 and Related Information) dataset https://opendata.usac.org/E-rate/E-rate-Request-for-Discount-on-Services-FRN-Status/qdmp-ygft; if not, please let me know which ones you used.
+ 
+Ensure correct level of aggregation calculations:
+1. The ‘disbursement table’ is at the FRN level while the ‘commitment table’ is at the Recipient of service (ROS) FRN Line Item level. This means that in the ‘commitment table’ an FRN would be replicated for each Line item in an FRN, and each line item would be replicated for each ROS in each line item. With this in mind, before you can join the tables, you have to ensure that your calculations using the right level of aggregation on the ‘commitment table’ (roll up to the FRN total level):
+  a. Sum the field post_discount_extended_eligible_line_item_costs for each FRN line item to get the total for the FRN (ensure you dedup by not including duplicate lines because of multiple ROSs for a given FRN line item)
+  b. You can then use that sum to calculate
+    i. pct_of_committed_received = total_authorized_disbursement / sum_ post_discount_extended_eligible_line_item_costs
+ 
+Ensure you apply correct form and FRN status filters:
+2. On the ‘commitment table’:
+  a. form_471_status_name = ‘Committed’
+  b. form_471_frn_status_name = ‘funded’ (disbursements would only be authorized on funded FRNs)
+3. On the ‘disbursement table’:
+  a. form_version = ‘Current’ (this means the form was processed and committed)
+ 
+Joining fields: (later he clarified: the only joining field is Funding Request Number/FRN (funding year is not necessary as FRN’s are unique))
+1. funding_year
+2. funding_request_number
+ 
+Way to check correct joining:
+1. You can verify if you are joining correctly by ensuring that for each FRN:
+  a. [commitment table]. sum_ post_discount_extended_eligible_line_item_costs = [disbursement table]. funding_commitment_request
+ 
+```{r}
+# # this code is now implemented in the ec2 script that runs daily as disbursement_merged dataset
+# disbursement_merged <- disbursement_merge %>%
+#   distinct(funding_request_number, form_471_line_item_number, .keep_all = T) %>%
+#   mutate(post_discount_extended_eligible_line_item_costs =
+#            as.numeric(post_discount_extended_eligible_line_item_costs),
+#          funding_request_number = as.numeric(funding_request_number)) %>%
+#   group_by(funding_request_number) %>%
+#   summarise(post_discount_extended_eligible_line_item_costs_sum =
+#            sum(post_discount_extended_eligible_line_item_costs)) %>%
+#   left_join(disbursement %>%
+#               select(funding_request_number, funding_commitment_request, total_authorized_disbursement),
+#             by = "funding_request_number"
+#             ) %>%
+#   mutate(pct_of_committed_received =
+#            total_authorized_disbursement / post_discount_extended_eligible_line_item_costs_sum)
+```
+
+```{r}
+# Use Lorenzo's test to see if the calculations and joins worked correctly
+# You can verify if you are joining correctly by ensuring that for each FRN:
+# a. [commitment table]. sum_ post_discount_extended_eligible_line_item_costs = [disbursement table].
+# funding_commitment_request
+isTRUE(disbursement_merged$post_discount_extended_eligible_line_item_costs_sum == disbursement_merged$funding_commitment_request)
+```
+
+```{r}
+# Check if it's a rounding issue
+disbursement_merged %>%
+  #mutate(post_discount_extended_eligible_line_item_costs_sum =
+           #base::ceiling(post_discount_extended_eligible_line_item_costs_sum),
+         #funding_commitment_request = base::ceiling(funding_commitment_request)) %>% 
+  filter(post_discount_extended_eligible_line_item_costs_sum - funding_commitment_request > 1 | post_discount_extended_eligible_line_item_costs_sum - funding_commitment_request < -1) 
+  #write.csv("~/Google Drive File Stream/Shared drives/ALA-ERate/Data/Lorenzo_Sum_and_FCR_mismatch.csv")
+```
+
+```{r}
+# Take a closer look at a FRN that is not matching as above chunk displays
+read.csv("https://opendata.usac.org/resource/avi8-svp9.csv?funding_request_number=1799001258")
+```
+
+```{r}
+# Check to see if any orgs were disbursed greater than 100% of committed funds
+disbursement_merged %>%
+  filter(pct_of_committed_received > 1.01) 
+  #write.csv("~/Google Drive File Stream/Shared drives/ALA-ERate/Data/Lorenzo_Greater_than_1_Disbursement.csv")
+```
+
+From Lorenzo: This is to follow up on bullet point 1.a below: for those instances where there is a mismatch of more than $1, I confirmed that the correct FRN discounted total is in the funding_commitment_request field (from the FRN Status dataset). The calculation in that field is using the current discount rate.
+ 
+For those 105 FRNs, you should use that field for your calculations as opposed to the sums from post_discount_extended_eligible_line_item_costs (from the E-rate Recipient Details And Commitments dataset), which is using a discount rate version that later changed during review. I submitted a ticket to have those records corrected.
+
+```{r}
+# Take out the FRNs that don't calculate correctly
+# between function https://suzan.rbind.io/2018/02/dplyr-tutorial-3/#filtering-rows-based-on-a-numeric-variable
+disbursement_merged %>% 
+  # Keep NA's (this needs to be explicit in the filter call)
+  filter(is.na(post_discount_extended_eligible_line_item_costs_sum - funding_commitment_request) |
+           between(post_discount_extended_eligible_line_item_costs_sum - funding_commitment_request, -1, 1),
+         is.na(pct_of_committed_received) | pct_of_committed_received < 1.01)
+```
+
+```{r}
+special_frn_df <- setdiff(disbursement_merged %>% distinct(funding_request_number), 
+               disbursement_merged %>% 
+                 filter(is.na(post_discount_extended_eligible_line_item_costs_sum - funding_commitment_request) |
+                          between(post_discount_extended_eligible_line_item_costs_sum - funding_commitment_request, -1, 1),
+                        is.na(pct_of_committed_received) | pct_of_committed_received < 1.01) %>% 
+          distinct(funding_request_number)
+        )
+```
+
+```{r}
+erate_libs %>% 
+  filter(ros_physical_state != "PR",
+         !is.na(form_471_frn_fiber_type_name))
+```
+
+```{r}
+erate_libs %>% 
+  filter(ros_physical_state != "PR",
+         !is.na(form_471_frn_fiber_type_name)) %>% 
+  summarise(n_distinct(ros_entity_number))
+```
+
+```{r}
+erate_libs %>% 
+  filter(ros_physical_state != "PR",
+         form_471_function_name == "Fiber") 
+```
+
+```{r}
+erate_libs %>% 
+  filter(ros_physical_state != "PR",
+         chosen_category_of_service == "Category1",
+         form_471_function_name == "Fiber") %>% 
+  summarise(n_distinct(ros_entity_number))
+```
+## C2 Budget
+https://www.usac.org/e-rate/applicant-process/applying-for-discounts/category-two-budget/
+
+```{r}
+read.csv("https://opendata.usac.org/resource/6brt-5pbv.csv?$select=distinct%20applicant_type")
+```
+
+
+```{r}
+# c2budget <- read.socrata(
+#   "https://opendata.usac.org/resource/6brt-5pbv.json?$where=starts_with(applicant_type,%20'Library')",
+#   app_token = Sys.getenv("USAC_Socrata")
+# )
+```
+
+
+```{r}
+## This code is incorrect because it does not add in the 20% allocation for 2020
+# erate_imls <- erate_imls %>%
+#   mutate(
+#     c2_2015_to_2020_budget_rough = ifelse(
+#       ros_entity_type != "non-instructional facility (nif)",
+#       case_when(
+#         !is.na(ros_square_footage) &
+#           !is.na(LOCALE_ADD_DESCR) &
+#           LOCALE_ADD_DESCR %in% c("City Large", "City Midsize", "Suburban Large") ~ ifelse(
+#             ros_square_footage * 6.52 > 11998.43,
+#             ros_square_footage * 6.52,
+#             11998.43
+#           ),!is.na(ros_square_footage) &
+#           !is.na(LOCALE_ADD_DESCR) &
+#           !LOCALE_ADD_DESCR %in% c("City Large", "City Midsize", "Suburban Large") ~ ifelse(
+#             ros_square_footage * 3.00 > 11998.43,
+#             ros_square_footage * 3.00,
+#             11998.43
+#           ),!is.na(ros_square_footage) &
+#           is.na(LOCALE_ADD_DESCR) &
+#           ros_urban_rural_status == "Urban" ~ ifelse(
+#             ros_square_footage * 6.52 > 11998.43,
+#             ros_square_footage * 6.52,
+#             11998.43
+#           ),!is.na(ros_square_footage) &
+#           is.na(LOCALE_ADD_DESCR) &
+#           ros_urban_rural_status == "Rural" ~ ifelse(
+#             ros_square_footage * 3.00 > 11998.43,
+#             ros_square_footage * 3.00,
+#             11998.43
+#           ),
+#         is.na(ros_square_footage) &
+#           !is.na(LOCALE_ADD_DESCR) &
+#           LOCALE_ADD_DESCR %in% c("City Large", "City Midsize", "Suburban Large") ~ ifelse(SQ_FEET *
+#                                                                                              6.52 > 11998.43, SQ_FEET * 6.52, 11998.43),
+#         is.na(ros_square_footage) &
+#           !is.na(LOCALE_ADD_DESCR) &
+#           !LOCALE_ADD_DESCR %in% c("City Large", "City Midsize", "Suburban Large") ~ ifelse(SQ_FEET *
+#                                                                                               3.00 > 11998.43, SQ_FEET * 3.00, 11998.43),
+#         is.na(ros_square_footage) &
+#           is.na(LOCALE_ADD_DESCR) &
+#           ros_urban_rural_status == "Urban" ~ ifelse(SQ_FEET * 6.52 > 11998.43, SQ_FEET *
+#                                                        6.52, 11998.43),
+#         is.na(ros_square_footage) &
+#           is.na(LOCALE_ADD_DESCR) &
+#           ros_urban_rural_status == "Rural" ~ ifelse(SQ_FEET * 3.00 > 11998.43, SQ_FEET *
+#                                                        3.00, 11998.43)
+#       ),
+#       NA
+#     )
+#   )
+```
+
+```{r}
+# Calculate the pre-discount Category 2 funds requested by IMLS libraries
+erate_imls %>% 
+  filter(!is.na(FSCSKEY) & !is.na(FSCS_SEQ),
+         chosen_category_of_service == "Category2",
+         organization_entity_type_name %in% c("library system", "library")) %>% 
+  add_count(funding_year, billed_entity_number, form_471_line_item_number, name = "entity_count") %>%
+    # Add estimated amount received by individual recipient by calculating
+  mutate(c2_prediscount_amt = as.numeric(pre_discount_extended_eligible_line_item_costs) /
+             entity_count) %>% 
+  summarise(sum(c2_prediscount_amt, na.rm = T))
+```
+
+```{r}
+# Calculate the c2 budget in 2020 dollars for all IMLS entities
+ae_and_outlets %>% 
+  group_by(FSCSKEY, FSCS_SEQ) %>% 
+  slice(which.max(SQ_FEET), with_ties = FALSE) %>% 
+  ungroup() %>% 
+  mutate(c2_budget = case_when(
+    !is.na(SQ_FEET) & !is.na(LOCALE) & LOCALE %in% c(11,12,21) ~ ifelse(SQ_FEET*6.52 > 11998.43, SQ_FEET*6.52, 11998.43),
+    !is.na(SQ_FEET) & !is.na(LOCALE) & !LOCALE %in% c(11,12,21) ~ ifelse(SQ_FEET*3.00 > 11998.43, SQ_FEET*3.00, 11998.43),
+    !is.na(SQ_FEET) & is.na(LOCALE) & LOCALE_ADD %in% c(11,12,21) ~ ifelse(SQ_FEET*6.52 > 11998.43, SQ_FEET*6.52, 11998.43),
+    !is.na(SQ_FEET) & is.na(LOCALE) & !LOCALE_ADD %in% c(11,12,21) ~ ifelse(SQ_FEET*3.00 > 11998.43, SQ_FEET*3.00, 11998.43)
+    )) %>% 
+  summarise(sum(c2_budget, na.rm = T))
+```
+
+```{r}
+# Calculate the pre-discount Category 2 funds requested by IMLS libraries
+erate_imls %>% 
+  filter(!is.na(FSCSKEY) & !is.na(FSCS_SEQ),
+         chosen_category_of_service == "Category2",
+         organization_entity_type_name %in% c("library system", "library")) %>% 
+  group_by(ros_entity_number) %>% 
+  slice_head(n = 1) %>% 
+  ungroup() %>% 
+  summarise(TotalBudget = sum(c2_2015_to_2020_budget_rough, na.rm = T))
+```
+
+Question of the day: What percentage of recipients of Category 1 commitments used that funding for fiber? % per funding year, also by state
+
+form_471_function_name
+
+```{r}
+erate_libs %>% 
+  filter(chosen_category_of_service == "Category1") %>% 
+  group_by(funding_year) %>% 
+  summarise(n_distinct(ros_entity_number))
+```
+
+```{r}
+erate_libs %>%
+  filter(chosen_category_of_service == "Category1") %>%
+  count(ros_entity_number, funding_year, form_471_function_name, form_471_frn_fiber_type_name) %>%
+  filter(form_471_function_name == "Fiber") %>%
+  group_by(funding_year) %>%
+  summarise(num_committed_for_fiber = n_distinct(ros_entity_number)) %>%
+  left_join(
+    erate_libs %>%
+      filter(chosen_category_of_service == "Category1") %>%
+      group_by(funding_year) %>%
+      summarise(num_committed_for_cat1 = n_distinct(ros_entity_number))
+  ) %>% 
+  mutate(portion_cat1_fiber = num_committed_for_fiber/num_committed_for_cat1) 
+```
+
+
+```{r}
+erate_libs %>%
+  filter(chosen_category_of_service == "Category1") %>%
+  count(ros_entity_number, funding_year, form_471_function_name) %>%
+  filter(form_471_function_name == "Fiber") %>%
+  group_by(funding_year) %>%
+  summarise(num_committed_for_fiber = n_distinct(ros_entity_number)) %>%
+  left_join(
+    erate_libs %>%
+      filter(chosen_category_of_service == "Category1") %>%
+      group_by(funding_year) %>%
+      summarise(num_committed_for_cat1 = n_distinct(ros_entity_number))
+  ) %>% 
+  mutate(portion_cat1_fiber = num_committed_for_fiber/num_committed_for_cat1) %>% 
+  ggplot(aes(x=funding_year, y=portion_cat1_fiber)) +
+  geom_bar(color = "black", size = 0.2, fill="#3778bf", stat = "identity") +
+  theme_linedraw() +
+  geom_text(aes(label = scales::percent(portion_cat1_fiber)), vjust = 1.5, colour = "white") +
+  scale_y_continuous(labels = scales::percent) +
+  labs(
+    title = "Of the libraries that were committed Category 1 funding,\nwhat percentage were committed funds for fiber?") +
+  theme(axis.title.x=element_blank(),
+        axis.title.y=element_blank())
+```
+
+```{r}
+erate_libs %>%
+  filter(chosen_category_of_service == "Category1",
+         form_471_function_name == "Fiber") %>%
+  group_by(funding_year, form_471_function_name, form_471_frn_fiber_type_name, form_471_frn_fiber_sub_type_name) %>% 
+  summarise(Category1_Commitment = if (all(is.na(cat1_discount_by_ros_estimated)))
+      NA_real_
+    else
+      scales::dollar(sum(cat1_discount_by_ros_estimated, na.rm = T), largest_with_cents = 10^9))
+```
+
+The state report - can you run it so that differences of greater than 10% (+/-) per category when comparing year-to-year are pulled out into a summary? (ahhhhhhh - getting distracted by e-rate - must turn away) Thinking if we had an overview page that showed changes in 2016 per state for any of those gains - Table lists all the states that had a change (and which way +/-) by category, then a table for 2017, and so on
+
+https://www.infoworld.com/article/3404276/how-to-calculate-month-over-month-changes-in-r.html
+
+```{r}
+erate_libs %>% 
+  select(ros_physical_state, 
+         funding_year,
+         chosen_category_of_service,
+         cat2_discount_by_ros,
+         cat1_discount_by_ros_estimated) %>%
+  group_by(ros_physical_state, funding_year) %>%
+  # Code within summarise is to ensure we keep NAs and that they don't become zeroes
+  summarise(Category1_Commitment = if(all(is.na(cat1_discount_by_ros_estimated))) NA_real_ 
+            else sum(cat1_discount_by_ros_estimated, na.rm = T),
+            Category2_Commitment = if(all(is.na(cat2_discount_by_ros))) NA_real_ 
+            else sum(cat2_discount_by_ros, na.rm = T)) %>% 
+  arrange(ros_physical_state, funding_year) %>% 
+  mutate(YoY_Cat1 = (Category1_Commitment - lag(Category1_Commitment)) / lag(Category1_Commitment),
+         YoY_Cat2 = (Category2_Commitment - lag(Category2_Commitment)) / lag(Category2_Commitment)) 
+```
+
+```{r}
+erate_libs %>% 
+  select(ros_physical_state,
+         ros_entity_number,
+         funding_year,
+         chosen_category_of_service,
+         cat2_discount_by_ros,
+         cat1_discount_by_ros_estimated) %>%
+  group_by(ros_physical_state, funding_year) %>%
+  # Code within summarise is to ensure we keep NAs and that they don't become zeroes
+  summarise(Category1_Commitment = if(all(is.na(cat1_discount_by_ros_estimated))) NA_real_ 
+            else sum(cat1_discount_by_ros_estimated, na.rm = T),
+            Category2_Commitment = if(all(is.na(cat2_discount_by_ros))) NA_real_ 
+            else sum(cat2_discount_by_ros, na.rm = T),
+            num_entities = n_distinct(ros_entity_number)) %>% 
+  rowwise() %>% 
+  mutate(National_Total = sum(c(Category1_Commitment, Category2_Commitment), na.rm = TRUE),
+         per_entity_avg = National_Total/num_entities) %>% 
+  ungroup() %>% 
+  group_by(ros_physical_state) %>% 
+  arrange(ros_physical_state, funding_year) %>%
+  mutate(YoY_Cat1 = (Category1_Commitment - lag(Category1_Commitment)) / lag(Category1_Commitment),
+         YoY_Cat2 = (Category2_Commitment - lag(Category2_Commitment)) / lag(Category2_Commitment),
+         YoY_Num = (num_entities - lag(num_entities)) / lag(num_entities),
+         YoY_EntAvg = (per_entity_avg - lag(per_entity_avg)) / lag(per_entity_avg)) %>% 
+  select(ros_physical_state, funding_year, YoY_Cat1:YoY_EntAvg) %>% 
+  pivot_longer(YoY_Cat1:YoY_EntAvg, names_to = "YoY_Comparison", values_to = "Change_from_Prev_Year") %>% 
+  filter(funding_year == 2019,
+         abs(Change_from_Prev_Year) > 0.50) %>% 
+  mutate(Change_from_Prev_Year = scales::percent(Change_from_Prev_Year)) 
+  
+```
+
+
+```{r}
+erate_libs %>% 
+  filter(ros_physical_state == "WA",
+         funding_year < 2020) %>% 
+  select(ros_physical_state,
+         ros_entity_number,
+         funding_year,
+         chosen_category_of_service,
+         cat2_discount_by_ros,
+         cat1_discount_by_ros_estimated) %>%
+  group_by(ros_physical_state, funding_year) %>%
+  # Code within summarise is to ensure we keep NAs and that they don't become zeroes
+  summarise(Category1_Commitment = if(all(is.na(cat1_discount_by_ros_estimated))) NA_real_ 
+            else sum(cat1_discount_by_ros_estimated, na.rm = T),
+            Category2_Commitment = if(all(is.na(cat2_discount_by_ros))) NA_real_ 
+            else sum(cat2_discount_by_ros, na.rm = T),
+            num_entities = n_distinct(ros_entity_number)) %>% 
+  rowwise() %>% 
+  mutate(National_Total = sum(c(Category1_Commitment, Category2_Commitment), na.rm = TRUE),
+         per_entity_avg = National_Total/num_entities) %>% 
+  ungroup() %>% 
+  group_by(ros_physical_state) %>% 
+  arrange(ros_physical_state, funding_year) %>%
+  mutate(YoY_Cat1 = (Category1_Commitment - lag(Category1_Commitment)) / lag(Category1_Commitment),
+         YoY_Cat2 = (Category2_Commitment - lag(Category2_Commitment)) / lag(Category2_Commitment),
+         YoY_Num = (num_entities - lag(num_entities)) / lag(num_entities),
+         YoY_EntAvg = (per_entity_avg - lag(per_entity_avg)) / lag(per_entity_avg)) %>% 
+  select(ros_physical_state, funding_year, YoY_Cat1:YoY_EntAvg) %>% 
+  pivot_longer(YoY_Cat1:YoY_EntAvg, names_to = "YoY_Comparison", values_to = "Change_from_Prev_Year") %>% 
+  ggplot(aes(x = funding_year, y = Change_from_Prev_Year, color = YoY_Comparison)) +
+  geom_point() +
+  geom_line() +
+  theme_linedraw() +
+  geom_text(aes(label = scales::percent(Change_from_Prev_Year)), vjust = 1.5, colour = "black") +
+  scale_y_continuous(labels = scales::percent) +
+  labs(
+    title = "Year over year percentage change") +
+  theme(axis.title.x=element_blank(),
+        axis.title.y=element_blank())
+  
+```
+
+
