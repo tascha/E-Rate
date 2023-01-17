@@ -288,7 +288,7 @@ s3write_using(full_disbursements,
 
 print("Full_Funded_Disbursements written to s3")
 
-# create a datafrome of the full libraries and consortia datasets (not filtered down to recipients)
+# create a dataframe of the full libraries and consortia datasets (not filtered down to recipients)
 disbursement_merge <- bind_rows(cat1_libs_consortia, cat2_libs_consortia)
 
 # Create a dataframe of funding request numbers that shows how much was requested, how much was disbursed,
@@ -355,7 +355,7 @@ matches <-
 matches <- matches %>% 
   mutate(ros_entity_number = as.numeric(ros_entity_number))
 
-# I'm now going to add FSCSKEY and FSCS_SEQ columns to erate_libs dataset and include the matches
+# Add FSCSKEY and FSCS_SEQ columns to erate_libs dataset and include the matches
 erate_libs <- erate_libs %>%
   mutate(ros_entity_number = as.numeric(ros_entity_number)) %>%
   left_join(matches %>% 
@@ -397,6 +397,8 @@ temp_imls <- erate_pls %>%
                        by = c("FSCSKEY", "FSCS_SEQ"),
                        jointype = "LEFT")
 
+# Add in a column with the descriptor fields for LOCAL_ADD
+# These descriptors are found in the documentation for the IMLS PLS dataset
 erate_pls <- erate_pls %>% 
   filter(!is.na(LIBNAME)) %>%
   bind_rows(temp_imls)%>% 
