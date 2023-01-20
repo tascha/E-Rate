@@ -1,0 +1,122 @@
+---
+title: "Download Speeds by State"
+author: "Bree Norlander"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output: html_notebook
+---
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(aws.s3)
+library(kableExtra)
+```
+
+```{r}
+erate_imls <- s3read_using(FUN = read.csv, object = "data/AVI8-SVP9_Commitments/Libraries_Funded_Committed_AVI8-SVP9_with_FSCS_Matches.csv", bucket = "erate-data")
+
+# Read in IMLS PLS dataset stored in S3
+full_imls <- s3read_using(FUN = read.csv, object = "data/IMLS_PLS/2014-2020_OUTLETs_and_AEs_Merged.csv", bucket = "erate-data")
+
+bucket <- get_bucket_df("erate-data")
+LastModified <- as.Date(bucket$LastModified[bucket$Key == "data/AVI8-SVP9_Commitments/Libraries_Funded_Committed_AVI8-SVP9_with_FSCS_Matches.csv"])
+```
+
+```{r}
+# Add in LOCALE Descriptions to full_imls
+full_imls <- full_imls %>% 
+  mutate(
+    LOCALE_ADD_DESCR = case_when(
+      LOCALE_ADD == 11 ~ "City Large",
+      LOCALE_ADD == 12 ~ "City Midsize",
+      LOCALE_ADD == 13 ~ "City Small",
+      LOCALE_ADD == 21 ~ "Suburban Large",
+      LOCALE_ADD == 22 ~ "Suburban Midsize",
+      LOCALE_ADD == 23 ~ "Suburban Small",
+      LOCALE_ADD == 31 ~ "Town Fringe",
+      LOCALE_ADD == 32 ~ "Town Distant",
+      LOCALE_ADD == 33 ~ "Town Remote",
+      LOCALE_ADD == 41 ~ "Rural Fringe",
+      LOCALE_ADD == 42 ~ "Rural Distant",
+      LOCALE_ADD == 43 ~ "Rural Remote",
+      LOCALE == 11 ~ "City Large",
+      LOCALE == 12 ~ "City Midsize",
+      LOCALE == 13 ~ "City Small",
+      LOCALE == 21 ~ "Suburban Large",
+      LOCALE == 22 ~ "Suburban Midsize",
+      LOCALE == 23 ~ "Suburban Small",
+      LOCALE == 31 ~ "Town Fringe",
+      LOCALE == 32 ~ "Town Distant",
+      LOCALE == 33 ~ "Town Remote",
+      LOCALE == 41 ~ "Rural Fringe",
+      LOCALE == 42 ~ "Rural Distant",
+      LOCALE == 43 ~ "Rural Remote"
+    ))
+```
+
+```{r}
+# We will only be investigating speed data from erate from 2020 where there was a cat1 commitment for non-wireless internet
+# Create a filtered dataset for analysis
+erate_2022 <- erate_imls %>% 
+  filter(chosen_category_of_service == "Category1",
+         form_471_function_name != "Miscellaneous",
+         form_471_product_name != "Data plan for portable device",
+    funding_year == 2022,
+    !is.na(form_471_download_speed_unit_name))
+```
+
+```{r}
+# Add normalized columns of upload and download speed requested to the dataset
+# Add FCC tiers (plus Chris J's served vs. gigabit) based on upload and download speeds
+erate_2022 <- erate_2022 %>%
+  # Normalize the download and upload speeds to Megabits per second
+  mutate(download_speed_mbps = case_when(
+    form_471_download_speed_unit_name == "Mbps" ~ download_speed,
+    form_471_download_speed_unit_name == "Gbps" ~ download_speed * 1000
+  )) %>%
+  mutate(upload_speed_mbps = case_when(
+    form_471_upload_speed_unit_name == "Mbps" ~ download_speed,
+    form_471_upload_speed_unit_name == "Gbps" ~ download_speed * 1000
+  )) %>% 
+  mutate(speed_tier = case_when(
+    download_speed_mbps < 25  ~ "unserved",
+    download_speed_mbps >= 25 & download_speed_mbps < 100  ~ "underserved",
+    download_speed_mbps >= 100 & download_speed_mbps < 1000  ~ "served_not_gigabit",
+    download_speed_mbps >= 1000 & upload_speed_mbps < 1000  ~ "served_not_gigabit",
+    download_speed_mbps >= 1000 & upload_speed_mbps >= 1000  ~ "gigabit"
+  ))
+```
+
+```{r}
+erate_2022 %>%
+  filter(form_471_function_name == "Wireless",
+         form_471_product_name == "Wireless data service",
+         speed_tier == "gigabit") 
+```
+
+```{r}
+erate_2022 %>%
+  group_by(speed_tier) %>%
+  summarize(count_distinct = n_distinct(ros_entity_number))
+```
+
+```{r}
+erate_2022 %>% 
+  summarize(num_libs = n_distinct(ros_entity_number))
+```
+
+```{r}
+erate_2022 %>% 
+  filter(!is.na(FSCSKEY) & !is.na(FSCS_SEQ)) %>% 
+  summarize(num_libs = n_distinct(ros_entity_number)) 
+```
+
+```{r}
+erate_2022 %>%
+  group_by(speed_tier, form_471_function_name, form_471_product_name) %>%
+  summarize(count_distinct = n_distinct(ros_entity_number)) %>% 
+  pivot_wider(names_from = speed_tier, values_from = count_distinct) %>% 
+  arrange(form_471_function_name, form_471_product_name)
+```
+

@@ -39,22 +39,21 @@ disbursement_merged <- s3read_using(FUN = read.csv, object = "data/USAC_Tables_M
 
 erate_libs <- s3read_using(FUN = read.csv, object = "data/AVI8-SVP9_Commitments/Libraries_Funded_Committed_AVI8-SVP9.csv", bucket = "erate-data")
 
-erate_imls <- s3read_using(FUN = read.csv, object = "data/AVI8-SVP9_Commitments/erate_imls_compact.csv", bucket = "erate-data")
+erate_imls <- s3read_using(FUN = read.csv, object = "data/AVI8-SVP9_Commitments/Libraries_Funded_Committed_AVI8-SVP9_with_FSCS_Matches.csv", bucket = "erate-data")
 
-ae_and_outlets <- s3read_using(FUN = read.csv, object = "data/IMLS_AE_and_Outlets_combined_dataset.csv", bucket = "erate-data")
-ae_and_outlets <- ae_and_outlets %>% select(-X)
+ae_and_outlets <- s3read_using(FUN = read.csv, object = "data/IMLS_PLS/2014-2020_OUTLETs_and_AEs_Merged.csv", bucket = "erate-data")
 
-imls_outlet_erate <- s3read_using(FUN = read.csv, object = "data/imls_outlet_erate.csv", bucket = "erate-data")
-imls_outlet_erate <- imls_outlet_erate %>% select(-X)
+# imls_outlet_erate <- s3read_using(FUN = read.csv, object = "data/imls_outlet_erate.csv", bucket = "erate-data")
+# imls_outlet_erate <- imls_outlet_erate %>% select(-X)
 
-imls_ae_erate <- s3read_using(FUN = read.csv, object = "data/imls_ae_erate.csv", bucket = "erate-data")
-imls_ae_erate <- imls_ae_erate %>% select(-X)
+# imls_ae_erate <- s3read_using(FUN = read.csv, object = "data/imls_ae_erate.csv", bucket = "erate-data")
+# imls_ae_erate <- imls_ae_erate %>% select(-X)
 
 state_pops <- s3read_using(FUN = read.csv, object = "data/Population_Data/State_Populations_2016-2021.csv", bucket = "erate-data")
 
-full_imls_2018 <- read.csv("~/Google Drive/Shared drives/ALA-ERate/Data/2021-06-03_IMLS_MashUp_2018.csv")
+# full_imls_2018 <- read.csv("~/Google Drive/Shared drives/ALA-ERate/Data/2021-06-03_IMLS_MashUp_2018.csv")
 
-full_imls_2019 <- read.csv("~/Google Drive/Shared drives/ALA-ERate/Data/2021-06-03_IMLS_MashUp_2019.csv")
+# full_imls_2019 <- read.csv("~/Google Drive/Shared drives/ALA-ERate/Data/2021-06-03_IMLS_MashUp_2019.csv")
 ```
 
 ```{r}
