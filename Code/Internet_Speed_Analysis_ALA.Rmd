@@ -6,11 +6,11 @@ output: html_notebook
 ---
 
 ```{r}
+library(RSocrata)
 library(dplyr)
 library(tidyr)
 library(ggplot2)
 library(aws.s3)
-library(kableExtra)
 ```
 
 ```{r}
@@ -19,8 +19,20 @@ erate_imls <- s3read_using(FUN = read.csv, object = "data/AVI8-SVP9_Commitments/
 # Read in IMLS PLS dataset stored in S3
 full_imls <- s3read_using(FUN = read.csv, object = "data/IMLS_PLS/2014-2020_OUTLETs_and_AEs_Merged.csv", bucket = "erate-data")
 
+# Read in 2022 IMLS PLS dataset stored in S3
+imls_ae_2022 <- s3read_using(FUN = read.csv, object = "data/IMLS_PLS/2020_IMLS_PLS_AE.csv", bucket = "erate-data")
+
+# Read in 2022 IMLS PLS dataset stored in S3
+imls_out_2022 <- s3read_using(FUN = read.csv, object = "data/IMLS_PLS/2020_IMLS_PLS_OUTLET.csv", bucket = "erate-data")
+
 bucket <- get_bucket_df("erate-data")
 LastModified <- as.Date(bucket$LastModified[bucket$Key == "data/AVI8-SVP9_Commitments/Libraries_Funded_Committed_AVI8-SVP9_with_FSCS_Matches.csv"])
+
+# Read in purpose dataset from 
+purpose <- read.socrata(
+  "https://opendata.usac.org/resource/hbj5-2bpj.json?funding_year=2022",
+  app_token = Sys.getenv("USAC_Socrata")
+)
 ```
 
 ```{r}
@@ -56,14 +68,22 @@ full_imls <- full_imls %>%
 ```
 
 ```{r}
-# We will only be investigating speed data from erate from 2020 where there was a cat1 commitment for non-wireless internet
-# Create a filtered dataset for analysis
+# Create a specific filtered dataset for this analysis
 erate_2022 <- erate_imls %>% 
   filter(chosen_category_of_service == "Category1",
          form_471_function_name != "Miscellaneous",
          form_471_product_name != "Data plan for portable device",
-    funding_year == 2022,
-    !is.na(form_471_download_speed_unit_name))
+         funding_year == 2022,
+         !is.na(form_471_download_speed_unit_name),
+         !is.na(FSCSKEY),
+         MOST_RECENT_PLS == 2020) %>% 
+  left_join((purpose %>% 
+               select(application_number, form_471_line_item_number, form_471_purpose_name, form_version) %>% 
+               filter(form_version == "Current") %>% 
+               mutate(application_number = as.numeric(application_number),
+                      form_471_line_item_number = as.numeric(form_471_line_item_number))
+             ), 
+            by=c("application_number", "form_471_line_item_number")) 
 ```
 
 ```{r}
@@ -89,10 +109,91 @@ erate_2022 <- erate_2022 %>%
 ```
 
 ```{r}
+# Add in LSA population
+erate_2022 <- erate_2022 %>% 
+  left_join((imls_ae_2022 %>% select(FSCSKEY, POPU_LSA)),
+            by= "FSCSKEY")
+```
+
+
+```{r}
+# write out a csv of select columns
+write.csv((erate_2022 %>% select(ros_entity_number:ros_entity_type, 
+                                 ros_subtype, 
+                                 ros_physical_address:ros_physical_zipcode,
+                                 ros_urban_rural_status,
+                                 billed_entity_number:organization_entity_type_name,
+                                 funding_year:form_471_frn_status_name,
+                                 spin_name:post_discount_applicant_share,
+                                 tribal_type,
+                                 cat1_discount_by_ros_estimated:form_version,
+                                 ros_longitude,
+                                 ros_latitude,
+                                 download_speed_mbps,
+                                 upload_speed_mbps
+                                 speed_tier,
+                                 POPU_LSA)),
+          "~/Documents/GitHub/E-Rate/Data/Internet_Speed_Applications_2022.csv")
+```
+
+
+```{r}
+# How many distinct ros_entity_numbers in dataset?
+erate_2022 %>% distinct(ros_entity_number) %>% nrow()
+```
+
+
+```{r}
+# Find out how many unique libs in whole dataset
+erate_imls %>% distinct(ros_entity_number) %>% nrow()
+```
+
+```{r}
+# Find out how many unique libs in whole dataset have IMLS codes
+erate_imls %>% filter(!is.na(FSCSKEY)) %>% distinct(ros_entity_number) %>% nrow()
+```
+
+```{r}
+# Find out how many unique libs in whole dataset have IMLS codes
+erate_imls %>% filter(!is.na(FSCSKEY), MOST_RECENT_PLS == 2020) %>% distinct(ros_entity_number) %>% nrow()
+```
+
+```{r}
+imls_out_2022 %>% 
+```
+
+
+
+
+```{r}
 erate_2022 %>%
-  filter(form_471_function_name == "Wireless",
-         form_471_product_name == "Wireless data service",
-         speed_tier == "gigabit") 
+  group_by(form_471_function_name) %>% 
+  summarize(num_libs = n_distinct(ros_entity_number)) %>% 
+  mutate(pct = round(num_libs/sum(num_libs)*100, 1))
+```
+
+```{r}
+erate_2022 %>%
+  group_by(form_471_function_name, form_471_purpose_name) %>% 
+  summarize(num_libs = n_distinct(ros_entity_number)) %>% 
+  mutate(pct = round(num_libs/sum(num_libs)*100, 1)) %>% 
+  pivot_wider(names_from = form_471_function_name, values_from = c('num_libs', 'pct')) %>% 
+  write.csv( "~/Downloads/Function_and_Purpose_Count_Pct.csv")
+```
+
+```{r}
+erate_2022 %>%
+  group_by(form_471_function_name) %>% 
+  summarize(num_libs = n_distinct(ros_entity_number)) %>% 
+  mutate(pct = round(num_libs/sum(num_libs)*100, 1))
+```
+
+```{r}
+erate_2022 %>%
+  group_by(form_471_function_name, ros_urban_rural_status) %>% 
+  summarize(num_libs = n_distinct(ros_entity_number)) %>% 
+  mutate(pct = round(num_libs/sum(num_libs)*100, 1)) %>% 
+  pivot_wider(names_from = ros_urban_rural_status, values_from = c('num_libs', 'pct'))
 ```
 
 ```{r}
