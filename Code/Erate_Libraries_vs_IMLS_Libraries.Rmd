@@ -1,0 +1,23 @@
+---
+title: "Erate vs IMLS"
+output: html_notebook
+---
+
+```{r}
+library(RSocrata)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(aws.s3)
+```
+
+
+```{r}
+# Read in erate dataset
+erate_imls <- s3read_using(FUN = read.csv, object = "data/AVI8-SVP9_Commitments/Libraries_Funded_Committed_AVI8-SVP9_with_FSCS_Matches.csv", bucket = "erate-data")
+
+# Read in IMLS PLS dataset stored in S3
+full_imls <- s3read_using(FUN = read.csv, object = "data/IMLS_PLS/2014-2020_OUTLETs_and_AEs_Merged.csv", bucket = "erate-data")
+
+```
+
