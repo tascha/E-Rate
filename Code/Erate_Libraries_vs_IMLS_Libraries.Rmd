@@ -19,5 +19,95 @@ erate_imls <- s3read_using(FUN = read.csv, object = "data/AVI8-SVP9_Commitments/
 # Read in IMLS PLS dataset stored in S3
 full_imls <- s3read_using(FUN = read.csv, object = "data/IMLS_PLS/2014-2020_OUTLETs_and_AEs_Merged.csv", bucket = "erate-data")
 
+# Read in IMLS PLS dataset stored in S3
+imls_ae_2020 <- s3read_using(FUN = read.csv, object = "data/IMLS_PLS/2014-2020_OUTLETs_and_AEs_Merged.csv", bucket = "erate-data")
+
+```
+
+```{r}
+# From Chris 1/26/23
+# Could you run a query tonight that would be a state report of e-rate participation for fy22? Basically a comparison against # PLS entities - who participated and who didn't - if you can break it out at all by locale code, great, but if not, then I'll # take just overall participation
+```
+
+```{r}
+# Add in LOCALE Descriptions to full_imls
+full_imls <- full_imls %>% 
+  mutate(
+    LOCALE_ADD_DESCR = case_when(
+      LOCALE_ADD == 11 ~ "City Large",
+      LOCALE_ADD == 12 ~ "City Midsize",
+      LOCALE_ADD == 13 ~ "City Small",
+      LOCALE_ADD == 21 ~ "Suburban Large",
+      LOCALE_ADD == 22 ~ "Suburban Midsize",
+      LOCALE_ADD == 23 ~ "Suburban Small",
+      LOCALE_ADD == 31 ~ "Town Fringe",
+      LOCALE_ADD == 32 ~ "Town Distant",
+      LOCALE_ADD == 33 ~ "Town Remote",
+      LOCALE_ADD == 41 ~ "Rural Fringe",
+      LOCALE_ADD == 42 ~ "Rural Distant",
+      LOCALE_ADD == 43 ~ "Rural Remote",
+      LOCALE == 11 ~ "City Large",
+      LOCALE == 12 ~ "City Midsize",
+      LOCALE == 13 ~ "City Small",
+      LOCALE == 21 ~ "Suburban Large",
+      LOCALE == 22 ~ "Suburban Midsize",
+      LOCALE == 23 ~ "Suburban Small",
+      LOCALE == 31 ~ "Town Fringe",
+      LOCALE == 32 ~ "Town Distant",
+      LOCALE == 33 ~ "Town Remote",
+      LOCALE == 41 ~ "Rural Fringe",
+      LOCALE == 42 ~ "Rural Distant",
+      LOCALE == 43 ~ "Rural Remote"
+    )) %>% 
+  separate(LOCALE_ADD_DESCR, 
+        into = c("LOCALE_TOP_LEVEL_DESCR", NA),
+        sep = " "
+  )
+```
+
+```{r}
+erate_imls %>% 
+  filter(funding_year == 2022) %>% 
+  left_join((full_imls %>% 
+               filter(PLS_YEAR == 2020) %>% 
+               select(FSCSKEY, FSCS_SEQ, LOCALE_TOP_LEVEL_DESCR)),
+            by = c("FSCSKEY", "FSCS_SEQ")) %>% 
+  group_by(ros_physical_state, LOCALE_TOP_LEVEL_DESCR) %>% 
+  summarize(num_erate_libs = n_distinct(ros_entity_number),
+            num_imls_erate_libs = n_distinct(FSCSKEY, FSCS_SEQ, na.rm = T)) %>% 
+  full_join((full_imls %>%
+               filter(PLS_YEAR == 2020) %>%
+               group_by(STABR, LOCALE_TOP_LEVEL_DESCR) %>%
+               summarise(num_imls_libs = n_distinct(FSCSKEY, FSCS_SEQ))),
+            by = c("ros_physical_state" = "STABR", "LOCALE_TOP_LEVEL_DESCR" = "LOCALE_TOP_LEVEL_DESCR")
+            ) %>% 
+  arrange(ros_physical_state, LOCALE_TOP_LEVEL_DESCR) %>% 
+  write.csv("~/Documents/GitHub/E-Rate/Data/2022_Erate_Lib_Counts_and_IMLS_Lib_Counts_with_Locale.csv")
+```
+
+```{r}
+combined <- erate_imls %>% 
+  filter(funding_year == 2022) %>% 
+  distinct(ros_entity_number, ros_entity_name, ros_physical_state, ros_latitude, ros_longitude, FSCSKEY, FSCS_SEQ) %>% 
+  full_join((full_imls %>% 
+               filter(PLS_YEAR == 2020) %>% 
+               select(FSCSKEY, FSCS_SEQ, LIBNAME, STABR, LOCALE_TOP_LEVEL_DESCR, LATITUDE, LONGITUD)),
+            by = c("FSCSKEY", "FSCS_SEQ")) %>% 
+  arrange(ros_entity_number)
+```
+
+```{r}
+# i just thought of another query - can you also generate a list of the libraries who didn't receive commitments in fy22 - 
+# that  would be a useful layer to add to these maps
+```
+
+```{r}
+combined %>% 
+  filter(is.na(ros_entity_number)) %>% 
+  left_join((imls_ae_2020 %>% 
+               filter(!is.na(POPU_LSA)) %>% 
+               distinct(FSCSKEY, POPU_LSA)), 
+            by = "FSCSKEY") %>% 
+  write.csv("~/Documents/GitHub/E-Rate/Data/2022_IMLS_Libs_Not_in_Erate.csv")
 ```
 

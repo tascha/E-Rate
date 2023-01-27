@@ -9,6 +9,7 @@ output: html_notebook
 library(RSocrata)
 library(dplyr)
 library(tidyr)
+library(stringr)
 library(ggplot2)
 library(aws.s3)
 ```
@@ -19,11 +20,8 @@ erate_imls <- s3read_using(FUN = read.csv, object = "data/AVI8-SVP9_Commitments/
 # Read in IMLS PLS dataset stored in S3
 full_imls <- s3read_using(FUN = read.csv, object = "data/IMLS_PLS/2014-2020_OUTLETs_and_AEs_Merged.csv", bucket = "erate-data")
 
-# Read in 2022 IMLS PLS dataset stored in S3
-imls_ae_2022 <- s3read_using(FUN = read.csv, object = "data/IMLS_PLS/2020_IMLS_PLS_AE.csv", bucket = "erate-data")
-
-# Read in 2022 IMLS PLS dataset stored in S3
-imls_out_2022 <- s3read_using(FUN = read.csv, object = "data/IMLS_PLS/2020_IMLS_PLS_OUTLET.csv", bucket = "erate-data")
+# Read in IMLS PLS AE 2020 dataset stored in S3
+imls_ae_2020 <- s3read_using(FUN = read.csv, object = "data/IMLS_PLS/2020_IMLS_PLS_AE.csv", bucket = "erate-data")
 
 bucket <- get_bucket_df("erate-data")
 LastModified <- as.Date(bucket$LastModified[bucket$Key == "data/AVI8-SVP9_Commitments/Libraries_Funded_Committed_AVI8-SVP9_with_FSCS_Matches.csv"])
@@ -64,7 +62,12 @@ full_imls <- full_imls %>%
       LOCALE == 41 ~ "Rural Fringe",
       LOCALE == 42 ~ "Rural Distant",
       LOCALE == 43 ~ "Rural Remote"
-    ))
+    )) %>% 
+  # separate to create high-level category
+  # https://stackoverflow.com/a/53701998
+  separate(LOCALE_ADD_DESCR, 
+        into = c("LOCALE_TOP_LEVEL_DESCR", NA),
+        sep = " ")
 ```
 
 ```{r}
@@ -78,7 +81,7 @@ erate_2022 <- erate_imls %>%
          !is.na(FSCSKEY),
          MOST_RECENT_PLS == 2020) %>% 
   left_join((purpose %>% 
-               select(application_number, form_471_line_item_number, form_471_purpose_name, form_version) %>% 
+               select(application_number, form_471_line_item_number, form_471_purpose_name, form_version, connection_directly_school, connection_supports_service) %>% 
                filter(form_version == "Current") %>% 
                mutate(application_number = as.numeric(application_number),
                       form_471_line_item_number = as.numeric(form_471_line_item_number))
@@ -105,14 +108,45 @@ erate_2022 <- erate_2022 %>%
     download_speed_mbps >= 100 & download_speed_mbps < 1000  ~ "served_not_gigabit",
     download_speed_mbps >= 1000 & upload_speed_mbps < 1000  ~ "served_not_gigabit",
     download_speed_mbps >= 1000 & upload_speed_mbps >= 1000  ~ "gigabit"
-  ))
+  )) %>% 
+  mutate(gigabit_binary = if_else(download_speed_mbps >= 1000 & upload_speed_mbps >= 1000, "gigabit", "not_gigabit"))
 ```
 
 ```{r}
 # Add in LSA population
 erate_2022 <- erate_2022 %>% 
-  left_join((imls_ae_2022 %>% select(FSCSKEY, POPU_LSA)),
-            by= "FSCSKEY")
+  left_join((imls_ae_2020 %>% 
+               filter(!is.na(POPU_LSA)) %>% 
+               distinct(FSCSKEY, POPU_LSA)),
+            by = "FSCSKEY")
+```
+
+```{r}
+# Add categorical variable indicating whether the request meets the 
+# FCC/ALA speed benchmark for fixed broadband
+# https://www.fcc.gov/general/summary-e-rate-modernization-order
+erate_2022 <- erate_2022 %>%
+  mutate(speed_benchmark = case_when(
+    POPU_LSA == -3 ~ "computation error LSA",
+    POPU_LSA == -9 ~ "computation error LSA",
+    is.na(POPU_LSA) ~ "computation error LSA",
+    download_speed_mbps >= 100 & POPU_LSA <= 50000 ~ "benchmark met",
+    download_speed_mbps >= 1000 & POPU_LSA > 50000 ~ "benchmark met",
+    download_speed_mbps < 100 ~ "benchmark not met",
+    download_speed_mbps < 1000 & POPU_LSA > 50000 ~ "benchmark not met"
+  ))
+```
+
+```{r}
+# Add categorical variable indicating whether LSA population greater than or less than 50,000
+erate_2022 <- erate_2022 %>%
+  mutate(pop_category = case_when(
+    POPU_LSA == -3 ~ "closedAE",
+    POPU_LSA == -9 ~ "suppressed",
+    is.na(POPU_LSA) ~ "unknown",
+    POPU_LSA <= 50000 ~ "under50",
+    POPU_LSA > 50000 ~ "over50"
+  ))
 ```
 
 
@@ -129,43 +163,58 @@ write.csv((erate_2022 %>% select(ros_entity_number:ros_entity_type,
                                  cat1_discount_by_ros_estimated:form_version,
                                  ros_longitude,
                                  ros_latitude,
+                                 POPU_LSA,
                                  download_speed_mbps,
-                                 upload_speed_mbps
+                                 upload_speed_mbps,
                                  speed_tier,
-                                 POPU_LSA)),
+                                 speed_benchmark)),
           "~/Documents/GitHub/E-Rate/Data/Internet_Speed_Applications_2022.csv")
 ```
 
-
 ```{r}
-# How many distinct ros_entity_numbers in dataset?
-erate_2022 %>% distinct(ros_entity_number) %>% nrow()
+# How many distinct ros_entity_numbers in our filtered erate dataset?
+erate_2022 %>% 
+  distinct(ros_entity_number) %>% 
+  nrow()
 ```
 
-
 ```{r}
-# Find out how many unique libs in whole dataset
-erate_imls %>% distinct(ros_entity_number) %>% nrow()
+# Find out how many unique libs applied for erate in 2022
+erate_imls %>% 
+  filter(funding_year == 2022) %>%  
+  distinct(ros_entity_number) %>% 
+  nrow()
 ```
 
 ```{r}
 # Find out how many unique libs in whole dataset have IMLS codes
-erate_imls %>% filter(!is.na(FSCSKEY)) %>% distinct(ros_entity_number) %>% nrow()
+erate_imls %>% 
+  filter(funding_year == 2022,
+         !is.na(FSCSKEY)) %>% 
+  distinct(ros_entity_number) %>% 
+  nrow()
 ```
 
 ```{r}
-# Find out how many unique libs in whole dataset have IMLS codes
-erate_imls %>% filter(!is.na(FSCSKEY), MOST_RECENT_PLS == 2020) %>% distinct(ros_entity_number) %>% nrow()
+# Find out how many unique libs in whole dataset have IMLS codes from 2020 PLS
+erate_imls %>% 
+  filter(funding_year == 2022,
+         !is.na(FSCSKEY), 
+         MOST_RECENT_PLS == 2020) %>% 
+  distinct(ros_entity_number) %>% 
+  nrow()
 ```
 
 ```{r}
-imls_out_2022 %>% 
+# How many total unique imls entities in 2020
+full_imls %>% 
+  filter(PLS_YEAR == 2020) %>% 
+  distinct(FSCSKEY, FSCS_SEQ) %>% 
+  nrow()
 ```
 
-
-
-
 ```{r}
+# count libs by function
 erate_2022 %>%
   group_by(form_471_function_name) %>% 
   summarize(num_libs = n_distinct(ros_entity_number)) %>% 
@@ -173,27 +222,29 @@ erate_2022 %>%
 ```
 
 ```{r}
+# Count libs by function and purpose
 erate_2022 %>%
   group_by(form_471_function_name, form_471_purpose_name) %>% 
   summarize(num_libs = n_distinct(ros_entity_number)) %>% 
-  mutate(pct = round(num_libs/sum(num_libs)*100, 1)) %>% 
-  pivot_wider(names_from = form_471_function_name, values_from = c('num_libs', 'pct')) %>% 
-  write.csv( "~/Downloads/Function_and_Purpose_Count_Pct.csv")
+  pivot_wider(names_from = form_471_function_name, values_from = c('num_libs')) 
 ```
 
 ```{r}
-erate_2022 %>%
-  group_by(form_471_function_name) %>% 
-  summarize(num_libs = n_distinct(ros_entity_number)) %>% 
-  mutate(pct = round(num_libs/sum(num_libs)*100, 1))
-```
-
-```{r}
+# Count libs by function and urban/rural
 erate_2022 %>%
   group_by(form_471_function_name, ros_urban_rural_status) %>% 
   summarize(num_libs = n_distinct(ros_entity_number)) %>% 
-  mutate(pct = round(num_libs/sum(num_libs)*100, 1)) %>% 
-  pivot_wider(names_from = ros_urban_rural_status, values_from = c('num_libs', 'pct'))
+  ungroup() %>% 
+  mutate(pct = round(num_libs/sum(num_libs)*100, 1)) 
+```
+
+```{r}
+# Count libs by function and population category
+erate_2022 %>%
+  group_by(form_471_function_name, pop_category) %>% 
+  summarize(num_libs = n_distinct(ros_entity_number)) %>%
+  ungroup() %>% 
+  mutate(pct = round(num_libs/sum(num_libs)*100, 1)) 
 ```
 
 ```{r}
@@ -219,5 +270,60 @@ erate_2022 %>%
   summarize(count_distinct = n_distinct(ros_entity_number)) %>% 
   pivot_wider(names_from = speed_tier, values_from = count_distinct) %>% 
   arrange(form_471_function_name, form_471_product_name)
+```
+
+```{r}
+# could you make a salsa file for each of the 6 connection purposes? 
+
+purposes <- erate_2022 %>% 
+  distinct(form_471_purpose_name) %>% 
+  pull()
+
+for (x in purposes) {
+  erate_2022 %>% 
+    filter(form_471_purpose_name == x) %>% 
+    write.csv(paste0("~/Documents/GitHub/E-Rate/Data/", str_trunc(str_replace_all(string=x, pattern=" ", repl=""), 30, "right", ellipsis = ""), ".csv"))
+}
+
+```
+
+
+# IA Only
+
+```{r}
+# Create a dataset that only includes the two purposes that begin with the words Internet access
+ia_only <- erate_2022 %>% 
+  filter(grepl('^Internet access', form_471_purpose_name)) %>% 
+  add_count(ros_entity_number, name = "how_many_rows_per_lib")
+```
+
+```{r}
+# How many distinct ros_entity_numbers in ia dataset?
+ia_only %>% distinct(ros_entity_number) %>% nrow()
+```
+
+```{r}
+# Count libs by function
+ia_only %>%
+  group_by(form_471_function_name) %>% 
+  summarize(num_libs = n_distinct(ros_entity_number)) %>% 
+  mutate(pct = round(num_libs/sum(num_libs)*100, 1))
+```
+
+```{r}
+# Count libs by function and product
+ia_only %>%
+  group_by(form_471_function_name, form_471_product_name) %>% 
+  summarize(num_libs = n_distinct(ros_entity_number)) %>% 
+  ungroup() %>% 
+  mutate(pct = round(num_libs/sum(num_libs)*100, 1))
+```
+
+```{r}
+# Count libs by gigabit binary
+ia_only %>%
+  group_by(gigabit_binary) %>% 
+  summarize(num_libs = n_distinct(ros_entity_number)) %>% 
+  mutate(pct = round(num_libs/sum(num_libs)*100, 1))
 ```
 
