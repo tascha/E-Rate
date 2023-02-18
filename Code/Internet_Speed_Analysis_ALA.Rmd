@@ -67,7 +67,8 @@ full_imls <- full_imls %>%
   # https://stackoverflow.com/a/53701998
   separate(LOCALE_ADD_DESCR, 
         into = c("LOCALE_TOP_LEVEL_DESCR", NA),
-        sep = " ")
+        sep = " ",
+        remove = F)
 ```
 
 ```{r}
@@ -119,6 +120,16 @@ erate_2022 <- erate_2022 %>%
                filter(!is.na(POPU_LSA)) %>% 
                distinct(FSCSKEY, POPU_LSA)),
             by = "FSCSKEY")
+```
+
+```{r}
+# Add in LOCALE INFO 
+erate_2022 <- erate_2022 %>% 
+  left_join(full_imls %>%
+              group_by(FSCSKEY, FSCS_SEQ) %>%
+              slice_max(PLS_YEAR, n=1) %>% 
+              select(FSCSKEY, FSCS_SEQ, LOCALE_ADD, LOCALE, LOCALE_ADD_DESCR, LOCALE_TOP_LEVEL_DESCR),
+            by = c("FSCSKEY", "FSCS_SEQ"))
 ```
 
 ```{r}
