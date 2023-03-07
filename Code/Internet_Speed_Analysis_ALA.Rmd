@@ -23,6 +23,9 @@ full_imls <- s3read_using(FUN = read.csv, object = "data/IMLS_PLS/2014-2020_OUTL
 # Read in IMLS PLS AE 2020 dataset stored in S3
 imls_ae_2020 <- s3read_using(FUN = read.csv, object = "data/IMLS_PLS/2020_IMLS_PLS_AE.csv", bucket = "erate-data")
 
+# Read in IMLS PLS AE 2020 dataset stored in S3
+imls_out_2020 <- s3read_using(FUN = read.csv, object = "data/IMLS_PLS/2020_IMLS_PLS_OUTLET.csv", bucket = "erate-data")
+
 bucket <- get_bucket_df("erate-data")
 LastModified <- as.Date(bucket$LastModified[bucket$Key == "data/AVI8-SVP9_Commitments/Libraries_Funded_Committed_AVI8-SVP9_with_FSCS_Matches.csv"])
 
@@ -72,6 +75,14 @@ full_imls <- full_imls %>%
 ```
 
 ```{r}
+# How many unique entities in erate 2022 applied for Cat1?
+erate_imls |> 
+  filter(funding_year == 2022,
+         chosen_category_of_service == "Category1") |> 
+  summarise(n_distinct(ros_entity_number))
+```
+
+```{r}
 # Create a specific filtered dataset for this analysis
 erate_2022 <- erate_imls %>% 
   filter(chosen_category_of_service == "Category1",
@@ -88,6 +99,11 @@ erate_2022 <- erate_imls %>%
                       form_471_line_item_number = as.numeric(form_471_line_item_number))
              ), 
             by=c("application_number", "form_471_line_item_number")) 
+```
+
+```{r}
+# write out a csv of select columns
+write.csv((erate_2022, "~/Documents/GitHub/E-Rate/Data/Internet_Speed_Applications_2022.csv")
 ```
 
 ```{r}
@@ -109,7 +125,7 @@ erate_2022 <- erate_2022 %>%
     download_speed_mbps >= 100 & download_speed_mbps < 1000  ~ "served_not_gigabit",
     download_speed_mbps >= 1000 & upload_speed_mbps < 1000  ~ "served_not_gigabit",
     download_speed_mbps >= 1000 & upload_speed_mbps >= 1000  ~ "gigabit"
-  )) %>% 
+  )) %>%
   mutate(gigabit_binary = if_else(download_speed_mbps >= 1000 & upload_speed_mbps >= 1000, "gigabit", "not_gigabit"))
 ```
 
