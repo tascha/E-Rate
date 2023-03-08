@@ -21,7 +21,6 @@ erate_libs <-
   s3read_using(FUN = read.csv,
                object = "Libraries_Funded_Committed_AVI8-SVP9.csv",
                bucket = "erate-data/data/AVI8-SVP9_Commitments")
-erate_libs <- erate_libs %>% select(-X)
 
 # Read in matched data stored in S3 (this was created during a previous run of this script)
 matches <-
@@ -169,7 +168,7 @@ states_intersect <-
 # create empty list
 geo_list = list()
 
-# geo joining on lat/lon between erate data and outlets data
+# geo joining on lat/lon between erate data and PLS data
 for (i in 1:length(states_intersect)) {
   geo_list[[i]] <- geo_join(
     erate_libs_for_matching %>%
