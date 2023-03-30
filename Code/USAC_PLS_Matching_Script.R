@@ -17,7 +17,7 @@ library(aws.s3)
 library(aws.ec2metadata)
 
 # Read in most recent Erate Commitments library data stored in S3
-erate_libs <-
+erate_libraries <-
   s3read_using(FUN = read.csv,
                object = "Libraries_Funded_Committed_AVI8-SVP9.csv",
                bucket = "erate-data/data/AVI8-SVP9_Commitments")
@@ -58,20 +58,20 @@ matches <- matches %>%
 
 
 # Read in IMLS PLS datasets stored in S3
-imls <-
+imls_unique_entities <-
   s3read_using(FUN = read.csv,
                object = "data/IMLS_Unique_Entities_2014-2020.csv",
                bucket = "erate-data")
-imls <- imls %>% select(-X)
+imls_unique_entities <- imls_unique_entities %>% select(-X)
 
-# I'm now going to add FSCSKEY and FSCS_SEQ columns to erate_libs dataset and include the matches
-erate_libs <- erate_libs %>%
+# I'm now going to add FSCSKEY and FSCS_SEQ columns to erate_libraries dataset and include the matches
+erate_libraries <- erate_libraries %>%
   left_join(matches,
             by = c("ros_entity_number", "ros_physical_state")) %>%
   relocate(c("FSCSKEY", "FSCS_SEQ"), .after = ros_entity_number)
 
 # Create a dataframe of erate libraries to use in matching
-erate_libs_for_matching <- erate_libs %>%
+erate_libs_for_matching <- erate_libraries %>%
   filter(is.na(FSCSKEY) & is.na(FSCS_SEQ)) %>%
   filter(
     ros_entity_number != 17012400,
@@ -135,7 +135,7 @@ erate_libs_for_matching <-
     erate_substring = stringr::str_sub(ros_entity_name_processed, 1, 15)
   )
 
-imls <- imls %>%
+imls_unique_entities <- imls_unique_entities %>%
   mutate(
     LIBNAME = str_to_lower(stringi::stri_enc_toutf8(LIBNAME)),
     STABR = str_to_lower(str_trim(STABR, side = "both")),
@@ -162,8 +162,8 @@ imls <- imls %>%
 states_intersect <-
   str_sort(intersect(erate_libs_for_matching[!is.na(erate_libs_for_matching$ros_latitude) &
                                                !is.na(erate_libs_for_matching$ros_longitude), "ros_physical_state"],
-                     imls[!is.na(imls$LATITUDE) &
-                            !is.na(imls$LONGITUD), "STABR"]))
+                     imls_unique_entities[!is.na(imls$LATITUDE) &
+                            !is.na(imls_unique_entities$LONGITUD), "STABR"]))
 
 # create empty list
 geo_list = list()
@@ -175,7 +175,7 @@ for (i in 1:length(states_intersect)) {
       filter(ros_physical_state == states_intersect[i],
              !(is.na(ros_latitude) | is.na(ros_longitude)
       )),
-    imls %>%
+    imls_unique_entities %>%
       filter(STABR == states_intersect[i],
              !(is.na(LATITUDE) | is.na(LONGITUD))),
     by = c("ros_longitude" = "LONGITUD", "ros_latitude" = "LATITUDE"),
@@ -190,7 +190,7 @@ geo_matches_imls <- bind_rows(geo_list)
 
 # We now have multiple FSCSKEY and FSCS_SEQ columns that we will coalesce later
 
-# What exists in USAC but NOT IMLS?
+# Get the antijoin - the ones that don't match
 geo_list = list()
 
 for (i in 1:length(states_intersect)) {
@@ -199,7 +199,7 @@ for (i in 1:length(states_intersect)) {
       filter(ros_physical_state == states_intersect[i],!(
         is.na(ros_latitude) | is.na(ros_longitude)
       )),
-    imls %>%
+    imls_unique_entities %>%
       filter(STABR == states_intersect[i],!(is.na(LATITUDE) |
                                            is.na(LONGITUD))),
     by = c("ros_longitude" = "LONGITUD", "ros_latitude" = "LATITUDE"),
@@ -250,7 +250,7 @@ geo_string_match <- geo_matches_imls %>%
   )
 
 # What didn't end up matching?
-rosnomatch <- base::setdiff(unique(erate_libs$ros_entity_number),
+rosnomatch <- base::setdiff(unique(erate_libraries$ros_entity_number),
                             geo_string_match$ros_entity_number)
 
 # Make the list into a dataframe
@@ -269,7 +269,7 @@ non_matches <- non_matches %>%
   mutate(ros_entity_number = as.numeric(ros_entity_number)) %>%
   # Add in additional information as the dataset is currently just ros_entity_numbers
   left_join(
-    erate_libs %>%
+    erate_libraries %>%
       mutate(ros_entity_number = as.numeric(ros_entity_number)) %>%
       select(
         ros_entity_number,
@@ -321,9 +321,9 @@ fuzzy_string_test <- non_matches %>%
 # Get the list of zip codes that exist in both datasets
 imlszip <-
   intersect(fuzzy_string_test$ros_physical_zipcode,
-            imls$ZIP)
+            imls_unique_entities$ZIP)
 
-# string matching between erate data and outlets data
+# string matching between erate data and IMLS data
 name_list = list()
 
 # match on substrings by zipcode
@@ -331,7 +331,7 @@ for (i in 1:length(imlszip)) {
   name_list[[i]] <- fuzzy_string_test %>%
     filter(ros_physical_zipcode == imlszip[i]) %>%
     stringdist_join(
-      imls %>%
+      imls_unique_entities %>%
         filter(ZIP == imlszip[i]),
       by = c("ros_entity_name_processed" = "LIBNAME_PROCESSED"),
       max_dist = 0.3,
@@ -379,7 +379,7 @@ if (nrow(name_matches_zip > 0)) {
 # Add in ros_entity_name and ros_physical_address
 geo_string_match <- geo_string_match %>% 
   left_join(
-    erate_libs %>% 
+    erate_libraries %>% 
       group_by(ros_entity_number) %>% 
       slice_max(funding_year, with_ties = FALSE) %>% 
       select(ros_entity_number, ros_entity_name, ros_physical_address),
@@ -388,7 +388,7 @@ geo_string_match <- geo_string_match %>%
 
 # Add in the column showing the most recent PLS instance of the entity
 geo_string_match <- geo_string_match %>% 
-  left_join(imls %>% 
+  left_join(imls_unique_entities %>% 
               group_by(FSCSKEY, FSCS_SEQ) %>% 
               slice_max(PLS_YEAR, with_ties = FALSE) %>% 
               select(STABR, FSCSKEY, FSCS_SEQ, LIBNAME, ADDRESS, PLS_YEAR) %>% 

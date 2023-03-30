@@ -130,6 +130,15 @@ erate_2022 <- erate_2022 %>%
 ```
 
 ```{r}
+# output csv of USAC libraries not matched with IMLS
+erate_imls |> 
+  filter(is.na(FSCSKEY)) |> 
+  distinct(ros_entity_number, ros_entity_name, ros_entity_type, ros_physical_address, ros_physical_city, ros_physical_state, ros_physical_zipcode) |> 
+  write.csv("~/Documents/GitHub/E-Rate/Data/USAC_Libraries_Not_Matched_to_IMLS.csv")
+```
+
+
+```{r}
 # Add in LSA population
 erate_2022 <- erate_2022 %>% 
   left_join((imls_ae_2020 %>% 
