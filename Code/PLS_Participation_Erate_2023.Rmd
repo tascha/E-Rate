@@ -1,0 +1,382 @@
+---
+title: "PLS_Participation_in_Erate_2023"
+author: "Bree Norlander"
+date: "2023-04-12"
+output: html_document
+---
+
+```{r}
+library(RSocrata)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(glue)
+library(fuzzyjoin)
+library(geosphere)
+library(janitor)
+library(stringdist)
+library(rqdatatable)
+library(rquery)
+library(ggplot2)
+library(aws.s3)
+```
+
+```{r}
+entities = list()
+
+entities[[1]] <- read.socrata("https://opendata.usac.org/resource/avi8-svp9.json?funding_year=2023&organization_entity_type_name=Library", app_token = Sys.getenv("USAC_Socrata"))
+
+entities[[2]] <- read.socrata("https://opendata.usac.org/resource/avi8-svp9.json?funding_year=2023&organization_entity_type_name=Library System", app_token = Sys.getenv("USAC_Socrata"))
+
+erate_apps <- bind_rows(entities)
+```
+
+```{r}
+# Filter out NIFs
+erate_apps_2023 <- erate_apps %>% 
+   filter(ros_entity_type != "Non-Instructional Facility (NIF)")
+```
+
+```{r}
+# Read in IMLS PLS AE 2020 dataset stored in S3
+imls_ae_2020 <- s3read_using(FUN = read.csv, object = "data/IMLS_PLS/2020_IMLS_PLS_AE.csv", bucket = "erate-data")
+
+# Read in IMLS PLS AE 2020 dataset stored in S3
+imls_out_2020 <- s3read_using(FUN = read.csv, object = "data/IMLS_PLS/2020_IMLS_PLS_OUTLET.csv", bucket = "erate-data")
+```
+
+```{r}
+# We only want outlets that are not closed 
+imls_out_2020 <- imls_out_2020 |> 
+  filter(STATSTRU != 3)
+```
+
+```{r}
+# Read in matched data stored in S3
+# Import hand matching dataset with ros_entity_numbers matched to FSCS keys
+hand_matches <-
+  s3read_using(
+    FUN = read.csv,
+    na.strings = c("", " ", "N/A", "n/a"),
+    object = "Hand_Matches.csv",
+    bucket = "erate-data/data/USAC_IMLS_Match"
+  )
+
+hand_matches <- hand_matches %>%
+  select(ros_entity_number, ros_physical_state, FSCSKEY, FSCS_SEQ) %>%
+  mutate(ros_physical_state = toupper(ros_physical_state),
+         FSCS_SEQ = as.integer(FSCS_SEQ)) |> 
+  filter(!is.na(FSCSKEY) & !is.na(FSCS_SEQ),
+         FSCS_SEQ != 999) # we don't want any AE specific matches
+
+
+hand_match_list <- hand_matches |> 
+  distinct(ros_entity_number) |> 
+  pull()
+```
+
+```{r}
+# Create a dataframe of remaining erate libraries to use in matching
+erate_libs_for_matching <- erate_apps_2023 %>%
+  filter(
+    ros_entity_number != 17012400,
+    # this air force base lib doesn't match imls
+    ros_entity_number != 137653,
+    # this is a regional system that doesn't match imls
+    ros_entity_number != 138097,
+    # this is a regional system that doesn't match imls
+    ros_entity_number != 137724,
+    # this is a regional system that doesn't match imls
+    ros_entity_number != 231108,
+    # this is a regional system that doesn't match imls
+    ros_entity_number != 16030444,
+    # not an imls library
+    ros_entity_number != 126021,
+    # this is a regional system that doesn't match imls
+    ros_entity_number != 17011387,
+    # this is a regional system that doesn't match imls
+    ros_entity_number != 16062292,
+    # this is a library society that doesn't match imls
+    ros_entity_number != 133460,
+    # this is a regional system that doesn't match imls
+    ros_entity_number != 17009767,
+    # this is a federated system that doesn't match imls
+    ros_entity_number != 16040215,
+    # This is the internet archive and doesn't match imls
+    !ros_entity_number %in% hand_match_list
+  ) %>%
+  # With distinct function, if there are multiple rows for a given combination of inputs,
+  # only the first row will be preserved.
+  distinct(ros_entity_number, ros_physical_state, .keep_all = T) %>%
+  as.data.frame()
+```
+
+```{r}
+# Prepare data for matching
+# substring extraction derived from https://rpubs.com/iPhuoc/stringr_manipulation
+# stringr and regex help from https://stringr.tidyverse.org/articles/regular-expressions.html
+# Eliminate common words in library names like "the" "library" etc.
+erate_libs_for_matching <-
+  erate_libs_for_matching %>%
+  mutate(ros_longitude = as.numeric(ros_longitude),
+         ros_latitude = as.numeric(ros_latitude)) %>%
+  mutate(
+    ros_entity_number = as.numeric(ros_entity_number),
+    ros_physical_state = str_to_lower(str_trim(ros_physical_state, side = "both")),
+    ros_physical_city = str_to_lower(str_trim(ros_physical_city, side = "both")),
+    organization_name = str_to_lower(str_trim(organization_name, side = "both")),
+    org_city = str_to_lower(str_trim(org_city, side = "both")),
+    org_state = str_to_lower(str_trim(org_state, side = "both")),
+    ros_entity_name_processed = str_replace_all(
+      ros_entity_name,
+      c(
+        "the " = "",
+        "library" = "",
+        "libraries" = "",
+        "branch" = "",
+        "public" = "",
+        "community" = "",
+        "\\bbr\\b" = "",
+        "\\blib\\b" = ""
+      )
+    ),
+    ros_entity_name_processed = janitor::make_clean_names(ros_entity_name_processed, case =
+                                                            "upper_camel"),
+    erate_substring = stringr::str_sub(ros_entity_name_processed, 1, 15)
+  )
+```
+
+```{r}
+imls_unique_entities <- imls_out_2020 %>%
+  mutate(
+    LIBNAME = str_to_lower(stringi::stri_enc_toutf8(LIBNAME)),
+    STABR = str_to_lower(str_trim(STABR, side = "both")),
+    CITY = str_to_lower(stringi::stri_enc_toutf8(CITY)),
+    LIBNAME_PROCESSED = str_replace_all(
+      LIBNAME,
+      c(
+        "the " = "",
+        "library" = "",
+        "libraries" = "",
+        "branch" = "",
+        "public" = "",
+        "community" = "",
+        "\\bbr\\b" = "",
+        "\\blib\\b" = ""
+      )
+    ),
+    LIBNAME_PROCESSED = janitor::make_clean_names(LIBNAME_PROCESSED, case =
+                                                    "upper_camel"),
+    SUBSTRING = stringr::str_sub(LIBNAME_PROCESSED, 1, 15)
+  )
+```
+
+```{r}
+# Get the list of states that exist in both erate and imls datasets
+states_intersect <-
+  str_sort(intersect(erate_libs_for_matching[!is.na(erate_libs_for_matching$ros_latitude) &
+                                               !is.na(erate_libs_for_matching$ros_longitude), "ros_physical_state"],
+                     imls_unique_entities[!is.na(imls_unique_entities$LATITUDE) &
+                            !is.na(imls_unique_entities$LONGITUD), "STABR"]))
+```
+
+```{r}
+# create empty list
+geo_list = list()
+
+# geo joining on lat/lon between erate data and PLS data
+for (i in 1:length(states_intersect)) {
+  geo_list[[i]] <- geo_join(
+    erate_libs_for_matching %>%
+      filter(ros_physical_state == states_intersect[i],
+             !(is.na(ros_latitude) | is.na(ros_longitude)
+      )),
+    imls_unique_entities %>%
+      filter(STABR == states_intersect[i],
+             !(is.na(LATITUDE) | is.na(LONGITUD))),
+    by = c("ros_longitude" = "LONGITUD", "ros_latitude" = "LATITUDE"),
+    method = "haversine",
+    mode = "inner",
+    max_dist = 0.4,
+    distance_col = "miles_apart"
+  )
+}
+
+geo_matches_imls <- bind_rows(geo_list)
+
+```
+
+```{r}
+# The geo_matches_imls dataset contains many duplicate libraries because multiple libraries from IMLS matched the distance specifications,
+# thus duplicating libraries in the USAC data. We need to choose the best of the multiple matches. We'll create a custom algorithm for this
+# built by trial and error.
+geo_string_match <- geo_matches_imls %>%
+  mutate(
+    LIBNAME = iconv(LIBNAME, "UTF-8", "UTF-8", sub = ''),
+    ADDRESS = iconv(ADDRESS, "UTF-8", "UTF-8", sub = ''),
+    ros_physical_address = str_to_lower(str_trim(ros_physical_address, side = "both")),
+    ADDRESS = str_to_lower(str_trim(ADDRESS, side = "both")),
+    # Add string distance calculations
+    sub_dist = stringdist::stringdist(erate_substring, SUBSTRING, method = "jw"),
+    name_dist = stringdist::stringdist(ros_entity_name, LIBNAME, method = "jw"),
+    add_dist = stringdist::stringdist(ros_physical_address, ADDRESS, method = "jw")
+  ) %>%
+  rowwise() %>%
+  mutate(sum_distances = sum(sub_dist, name_dist, add_dist, na.rm = T)) %>%
+  group_by(ros_entity_number) %>%
+  arrange(sum_distances) %>%
+  slice_min(sum_distances, n = 1) %>%
+  slice_min(LIBNAME_PROCESSED, n= 1) |> 
+  filter(sum_distances < 1.2 | add_dist < 0.1)
+```
+
+```{r}
+matches <- hand_matches |> 
+  mutate(ros_physical_state = str_to_lower(str_trim(ros_physical_state, side = "both"))) |> 
+  ungroup() |> 
+  dplyr::union(geo_string_match |> 
+              select(ros_entity_number, ros_physical_state, FSCSKEY, FSCS_SEQ))
+```
+
+```{r}
+# check for dupes
+matches %>% group_by(ros_entity_number) |> add_tally() |> filter(n>1) |> arrange(ros_entity_number)
+```
+
+
+```{r}
+# What still doesn't match
+
+rosnomatch <- base::setdiff(unique(erate_libs_for_matching$ros_entity_number),
+                            matches$ros_entity_number)
+
+# Make the list into a dataframe
+non_matches <-
+  data.frame(
+    ros_entity_number = matrix(
+      unlist(rosnomatch),
+      nrow = length(rosnomatch),
+      byrow = T
+    ),
+    stringsAsFactors = FALSE
+  )
+```
+
+```{r}
+# Add variables back in to the non-matched recipient numbers
+non_matches <- non_matches %>%
+  mutate(ros_entity_number = as.numeric(ros_entity_number)) %>%
+  # Add in additional information as the dataset is currently just ros_entity_numbers
+  left_join(
+    erate_apps_2023 %>%
+      mutate(ros_entity_number = as.numeric(ros_entity_number)) %>%
+      select(
+        ros_entity_number,
+        ros_entity_name,
+        ros_physical_zipcode,
+        ros_entity_type,
+        ros_subtype,
+        ros_physical_address,
+        ros_physical_city,
+        ros_physical_state
+      ),
+    by = "ros_entity_number"
+  ) %>%
+  distinct(ros_entity_number, .keep_all = T)
+```
+
+```{r}
+# Create a new df to use that starts with the non-matches, adds in processed lib names
+# from erate_libs_for_matching, cleans strings
+fuzzy_string_test <- non_matches %>%
+  mutate(ros_entity_number = as.numeric(ros_entity_number)) %>%
+  left_join(
+    erate_libs_for_matching %>%
+      select(
+        ros_entity_number,
+        ros_entity_name
+      ),
+    by = c("ros_entity_number", "ros_entity_name")
+  ) %>%
+  mutate(
+    ros_physical_state = str_to_lower(str_trim(ros_physical_state, side = "both")),
+    ros_physical_city = str_to_lower(str_trim(ros_physical_city, side = "both")),
+    ros_entity_name_processed = str_replace_all(
+      ros_entity_name,
+      c(
+        "the " = "",
+        "library" = "",
+        "libraries" = "",
+        "branch" = "",
+        "public" = "",
+        "community" = "",
+        "\\bbr\\b" = "",
+        "\\blib\\b" = ""
+      )
+    ),
+    ros_entity_name_processed = janitor::make_clean_names(ros_entity_name_processed, case =
+                                                            "upper_camel"),
+    erate_substring = stringr::str_sub(ros_entity_name_processed, 1, 15)
+  )
+
+```
+
+```{r}
+# Get the list of zip codes that exist in both datasets
+imlszip <-
+  intersect(fuzzy_string_test$ros_physical_zipcode,
+            imls_unique_entities$ZIP)
+
+```
+
+```{r}
+# string matching between erate data and IMLS data
+name_list = list()
+
+# match on substrings by zipcode
+for (i in 1:length(imlszip)) {
+  name_list[[i]] <- fuzzy_string_test %>%
+    filter(ros_physical_zipcode == imlszip[i]) %>%
+    stringdist_join(
+      imls_unique_entities %>%
+        filter(ZIP == imlszip[i]),
+      by = c("ros_entity_name_processed" = "LIBNAME_PROCESSED"),
+      max_dist = 0.3,
+      mode = "left",
+      method = "jw",
+      distance_col = "substring_dist"
+    )
+}
+
+name_matches_zip <- bind_rows(name_list)
+```
+
+```{r}
+# Keep the best one of the matches if there are more than one
+name_matches_zip <- name_matches_zip %>%
+  group_by(ros_entity_number) %>%
+  slice_min(substring_dist) %>%
+  distinct(ros_entity_number, FSCSKEY, FSCS_SEQ, .keep_all = T)
+```
+
+```{r}
+matches <- matches |> 
+  full_join(name_matches_zip |> 
+              select(ros_entity_number, ros_physical_state, FSCSKEY, FSCS_SEQ),
+            by = c("ros_entity_number", "ros_physical_state", "FSCSKEY", "FSCS_SEQ"))
+```
+
+```{r}
+# check for dupes
+matches %>% group_by(ros_entity_number) |> add_tally() |> filter(n>1) |> arrange(ros_entity_number)
+```
+
+```{r}
+# Now add the matches into the erate dataset
+erate_apps_2023 <- erate_apps_2023 |> 
+  mutate(ros_entity_number = as.numeric(ros_entity_number)) |> 
+  left_join(matches |> select(-ros_physical_state),
+            by = "ros_entity_number") |> 
+  relocate(c(FSCSKEY, FSCS_SEQ), .after = ros_entity_number) # relocate FSCSKEY and FSCS_SEQ column
+```
+

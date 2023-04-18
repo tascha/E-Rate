@@ -75,6 +75,20 @@ full_imls <- full_imls %>%
 ```
 
 ```{r}
+# For this analysis we are using only imls_outlets from 2020 that were not closed
+# For comparison-sake remove closed libs from imls_out_2020
+imls_out_2020_comp <- imls_out_2020 |> 
+  filter(STATSTRU != 3)
+```
+
+```{r}
+# get the list of libs that were closed in the outlets_2020 dataset
+closed <- imls_out_2020 |> 
+  filter(STATSTRU == 3)
+```
+
+
+```{r}
 # How many unique entities in erate 2022 applied for Cat1?
 erate_imls |> 
   filter(funding_year == 2022,
@@ -91,7 +105,12 @@ erate_2022 <- erate_imls %>%
          funding_year == 2022,
          !is.na(form_471_download_speed_unit_name),
          !is.na(FSCSKEY),
-         MOST_RECENT_PLS == 2020) %>% 
+         MOST_RECENT_PLS == 2020,
+         FSCS_SEQ != 999,
+         !is.na(FSCS_SEQ)) %>% 
+  # Remove rows that are in the closed dataset
+  # https://stackoverflow.com/a/41371660
+  anti_join(closed, by = c("FSCSKEY", "FSCS_SEQ")) |> 
   left_join((purpose %>% 
                select(application_number, form_471_line_item_number, form_471_purpose_name, form_version, connection_directly_school, connection_supports_service) %>% 
                filter(form_version == "Current") %>% 
@@ -103,8 +122,25 @@ erate_2022 <- erate_imls %>%
 
 ```{r}
 # write out a csv of select columns
-write.csv((erate_2022, "~/Documents/GitHub/E-Rate/Data/Internet_Speed_Applications_2022.csv")
+write.csv(erate_2022, "~/Documents/GitHub/E-Rate/Data/Internet_Speed_Applications_2022.csv")
 ```
+
+```{r}
+# How many imls entities are in our dataset?
+erate_2022 |> filter(chosen_category_of_service == "Category1") |> 
+  summarise(n_distinct(FSCSKEY, FSCS_SEQ), n_distinct(ros_entity_number))
+```
+
+```{r}
+erate_2022 |> 
+  group_by(FSCSKEY, FSCS_SEQ) |> 
+  mutate(count_ents = n_distinct(ros_entity_number)) |> 
+  filter(count_ents > 1) |> 
+  arrange(FSCSKEY, FSCS_SEQ) |> 
+  write.csv("~/Documents/GitHub/E-Rate/Data/PLS_entities_matching_multiple_RENS.csv")
+```
+
+
 
 ```{r}
 # Add normalized columns of upload and download speed requested to the dataset
@@ -163,13 +199,13 @@ erate_2022 <- erate_2022 %>%
 # https://www.fcc.gov/general/summary-e-rate-modernization-order
 erate_2022 <- erate_2022 %>%
   mutate(speed_benchmark = case_when(
-    POPU_LSA == -3 ~ "computation error LSA",
-    POPU_LSA == -9 ~ "computation error LSA",
-    is.na(POPU_LSA) ~ "computation error LSA",
-    download_speed_mbps >= 100 & POPU_LSA <= 50000 ~ "benchmark met",
-    download_speed_mbps >= 1000 & POPU_LSA > 50000 ~ "benchmark met",
-    download_speed_mbps < 100 ~ "benchmark not met",
-    download_speed_mbps < 1000 & POPU_LSA > 50000 ~ "benchmark not met"
+    POPU_LSA == -3 ~ "computation error LSA equals -3",
+    POPU_LSA == -9 ~ "computation error LSA equals -9",
+    is.na(POPU_LSA) ~ "computation error no LSA",
+    download_speed_mbps >= 100 & POPU_LSA <= 50000 ~ "bandwidth target met",
+    download_speed_mbps >= 1000 & POPU_LSA > 50000 ~ "bandwidth target met",
+    download_speed_mbps < 100 ~ "bandwidth target not met",
+    download_speed_mbps < 1000 & POPU_LSA > 50000 ~ "bandwidth target not met"
   ))
 ```
 
@@ -185,6 +221,12 @@ erate_2022 <- erate_2022 %>%
   ))
 ```
 
+```{r}
+# Coun the number of distinct entities that met the bandwidth target by the population
+erate_2022 |> 
+  group_by(pop_category, speed_benchmark) |> 
+  summarise(n_distinct(ros_entity_number))
+```
 
 ```{r}
 # write out a csv of select columns

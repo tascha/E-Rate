@@ -31,31 +31,31 @@ matches <- matches %>%
   select(ros_entity_number, ros_physical_state, FSCSKEY, FSCS_SEQ) %>% 
   mutate(ros_physical_state = toupper(ros_physical_state))
 
-# The following commented out code can be run if new items are added to the Hand_Matches data
+# Read in matched data stored in S3
+# Import hand matching dataset with ros_entity_numbers matched to FSCS keys
+hand_matches <-
+  s3read_using(
+    FUN = read.csv,
+    na.strings = c("", " ", "N/A", "n/a"),
+    object = "Hand_Matches.csv",
+    bucket = "erate-data/data/USAC_IMLS_Match"
+  )
 
-# # Read in matched data stored in S3
-# # Import hand matching dataset with ros_entity_numbers matched to FSCS keys
-# hand_matches <-
-#   s3read_using(
-#     FUN = read.csv,
-#     na.strings = c("", " ", "N/A", "n/a"),
-#     object = "data/Hand_Matches.csv",
-#     bucket = "erate-data"
-#   )
-# 
-# hand_matches <- hand_matches %>% 
-#   filter(!is.na(FSCSKEY) & !is.na(FSCS_SEQ)) %>% 
-#   select(ros_entity_number, ros_physical_state, FSCSKEY, FSCS_SEQ) %>% 
-#   mutate(ros_physical_state = toupper(ros_physical_state),
-#          FSCS_SEQ = as.integer(FSCS_SEQ))
-# 
-# # Merge the hand_matches and matches
-# # Remove duplicates
-# matches <- matches %>%
-#   full_join(hand_matches) %>% 
-#   distinct(ros_entity_number, ros_physical_state, FSCSKEY, FSCS_SEQ)
+hand_matches <- hand_matches %>%
+  filter(!is.na(FSCSKEY) & !is.na(FSCS_SEQ)) %>%
+  select(ros_entity_number, ros_physical_state, FSCSKEY, FSCS_SEQ) %>%
+  mutate(ros_physical_state = toupper(ros_physical_state),
+         FSCS_SEQ = as.integer(FSCS_SEQ))
 
-
+# Merge the hand_matches and matches
+# Since we may have added hand_matches to fix erroneous matches, we need to prioritize that dataset
+matches <- hand_matches %>%
+  mutate(pref = 1) |> 
+  full_join(matches |> 
+              mutate(pref = 2)) |> 
+  arrange(ros_entity_number, pref) %>%
+  distinct(ros_entity_number, .keep_all=TRUE) |> 
+  select(-pref)
 
 # Read in IMLS PLS datasets stored in S3
 imls_unique_entities <-
@@ -96,6 +96,8 @@ erate_libs_for_matching <- erate_libraries %>%
     # this is a regional system that doesn't match imls
     ros_entity_number != 17009767,
     # this is a federated system that doesn't match imls
+    ros_entity_number != 16040215
+    # This is the internet archive and doesn't match imls
   ) %>%
   # With distinct function, if there are multiple rows for a given combination of inputs,
   # only the first row will be preserved.
@@ -162,7 +164,7 @@ imls_unique_entities <- imls_unique_entities %>%
 states_intersect <-
   str_sort(intersect(erate_libs_for_matching[!is.na(erate_libs_for_matching$ros_latitude) &
                                                !is.na(erate_libs_for_matching$ros_longitude), "ros_physical_state"],
-                     imls_unique_entities[!is.na(imls$LATITUDE) &
+                     imls_unique_entities[!is.na(imls_unique_entities$LATITUDE) &
                             !is.na(imls_unique_entities$LONGITUD), "STABR"]))
 
 # create empty list
