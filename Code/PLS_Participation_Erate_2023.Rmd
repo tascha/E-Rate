@@ -380,3 +380,57 @@ erate_apps_2023 <- erate_apps_2023 |>
   relocate(c(FSCSKEY, FSCS_SEQ), .after = ros_entity_number) # relocate FSCSKEY and FSCS_SEQ column
 ```
 
+```{r}
+# Add in POPULSA from IMLS AE
+erate_apps_2023 <- erate_apps_2023 |> 
+  left_join(imls_ae_2020 |> select(FSCSKEY, POPU_LSA), by = "FSCSKEY")
+```
+
+We can produce a table that provides a summary of the data as you described:
+
+    1)  xxx libraries serve >100,000 pop. And xxx of these apply for the E-rate.
+    2)  xxx libraries serve 50,000 – 99,999 pop. And xxx of these apply for the E-rate.
+    3)  xxx libraries serve 25,000 – 49,999  pop. And xxx of these apply for the E-rate.
+    4)  xxx libraries serve 5,000 – 24,999 pop. And xxx of these apply for the E-rate.
+    5)  xxx libraries serve <5,000 pop. And xxx of these apply for the E-rate.
+
+```{r}
+# Add in requested population categories
+erate_apps_2023 <- erate_apps_2023 |> 
+  mutate(POP_CATEGORY = case_when(
+      POPU_LSA < 5000 ~ "Under5k",
+      POPU_LSA >= 5000 & POPU_LSA < 25000  ~ "5to25K",
+      POPU_LSA >= 25000 & POPU_LSA < 50000  ~ "25to50K",
+      POPU_LSA >= 50000 & POPU_LSA < 100000  ~ "50to100K",
+      POPU_LSA > 100000 ~ "100Kover"))
+```
+
+```{r}
+# check for dupes
+erate_apps_2023 %>% distinct(ros_entity_number, ros_entity_name, FSCSKEY, FSCS_SEQ) |> group_by(FSCSKEY, FSCS_SEQ) |> add_tally() |> filter(n>1 & n < 5) |> arrange(FSCSKEY, FSCS_SEQ)
+```
+
+
+```{r}
+# write out a csv of select columns
+write.csv(erate_apps_2023, "~/Documents/GitHub/E-Rate/Data/2023_Erate_Applications_Libs_and_LibSystems_with_FSCS.csv")
+```
+
+```{r}
+# make a dataset of IMLS outlets to use for analysis
+imls_out_analyze <- imls_out_2020 |> 
+  filter(STATSTRU != 3) |> 
+  select(FSCSKEY, FSCS_SEQ, LIBNAME, STABR, ADDRESS) |> 
+  left_join(imls_ae_2020 |> select(FSCSKEY, POPU_LSA), by = "FSCSKEY") |> 
+   mutate(POP_CATEGORY = case_when(
+      POPU_LSA < 5000 ~ "Under5k",
+      POPU_LSA >= 5000 & POPU_LSA < 25000  ~ "5to25K",
+      POPU_LSA >= 25000 & POPU_LSA < 50000  ~ "25to50K",
+      POPU_LSA >= 50000 & POPU_LSA < 100000  ~ "50to100K",
+      POPU_LSA > 100000 ~ "100Kover")) |> 
+  left_join(erate_apps_2023 |> filter(!is.na(FSCSKEY) & !is.na(FSCS_SEQ)) |> distinct(FSCSKEY, FSCS_SEQ, ros_entity_number, ros_entity_name),
+            by = c("FSCSKEY", "FSCS_SEQ"))
+```
+
+
+
