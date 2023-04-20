@@ -398,11 +398,14 @@ We can produce a table that provides a summary of the data as you described:
 # Add in requested population categories
 erate_apps_2023 <- erate_apps_2023 |> 
   mutate(POP_CATEGORY = case_when(
+    POPU_LSA == -3 ~ "No Population closed or temporarily closed administrative entity",
+    POPU_LSA == -9 ~ "Population data suppressed for analytic purposes",
+    is.na(POPU_LSA) ~ "Population unknown",
       POPU_LSA < 5000 ~ "Under5k",
       POPU_LSA >= 5000 & POPU_LSA < 25000  ~ "5to25K",
       POPU_LSA >= 25000 & POPU_LSA < 50000  ~ "25to50K",
       POPU_LSA >= 50000 & POPU_LSA < 100000  ~ "50to100K",
-      POPU_LSA > 100000 ~ "100Kover"))
+      POPU_LSA >= 100000 ~ "100Kover"))
 ```
 
 ```{r}
@@ -423,14 +426,41 @@ imls_out_analyze <- imls_out_2020 |>
   select(FSCSKEY, FSCS_SEQ, LIBNAME, STABR, ADDRESS) |> 
   left_join(imls_ae_2020 |> select(FSCSKEY, POPU_LSA), by = "FSCSKEY") |> 
    mutate(POP_CATEGORY = case_when(
+    POPU_LSA == -3 ~ "No Population closed or temporarily closed administrative entity",
+    POPU_LSA == -9 ~ "Population data suppressed for analytic purposes",
+    is.na(POPU_LSA) ~ "Population unknown",
       POPU_LSA < 5000 ~ "Under5k",
       POPU_LSA >= 5000 & POPU_LSA < 25000  ~ "5to25K",
       POPU_LSA >= 25000 & POPU_LSA < 50000  ~ "25to50K",
       POPU_LSA >= 50000 & POPU_LSA < 100000  ~ "50to100K",
-      POPU_LSA > 100000 ~ "100Kover")) |> 
+      POPU_LSA >= 100000 ~ "100Kover")) |> 
   left_join(erate_apps_2023 |> filter(!is.na(FSCSKEY) & !is.na(FSCS_SEQ)) |> distinct(FSCSKEY, FSCS_SEQ, ros_entity_number, ros_entity_name),
             by = c("FSCSKEY", "FSCS_SEQ"))
 ```
 
+```{r}
+# write out a csv of select columns
+write.csv(imls_out_analyze, "~/Documents/GitHub/E-Rate/Data/2020_PLS_with_USAC_Identifiers_from_2023_Erate_Apps.csv")
+```
+
+```{r}
+# there are legit reasons why some IMLS entities match multiple USAC entities
+# we don't need to know those for this analysis though, so let's just keep the first occurrence
+# when there is a duplicate FSCSKEY and FSCS_SEQ combo
+imls_out_analyze <- imls_out_analyze |> 
+  group_by(FSCSKEY, FSCS_SEQ) %>%
+  slice_head(n=1) |> 
+  ungroup()
+```
+
+```{r}
+imls_out_analyze |> count(POP_CATEGORY)
+```
+
+```{r}
+imls_out_analyze |> 
+  filter(!is.na(ros_entity_number)) |> 
+  count(POP_CATEGORY)
+```
 
 
