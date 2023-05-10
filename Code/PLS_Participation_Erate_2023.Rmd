@@ -424,7 +424,7 @@ write.csv(erate_apps_2023, "~/Documents/GitHub/E-Rate/Data/2023_Erate_Applicatio
 imls_out_analyze <- imls_out_2020 |> 
   filter(STATSTRU != 3) |> 
   select(FSCSKEY, FSCS_SEQ, LIBNAME, STABR, ADDRESS) |> 
-  left_join(imls_ae_2020 |> select(FSCSKEY, POPU_LSA), by = "FSCSKEY") |> 
+  left_join(imls_ae_2020 |> mutate(FSCS_IMLS_Match = 'Yes') |> select(FSCSKEY, POPU_LSA, FSCS_IMLS_Match), by = "FSCSKEY") |> 
    mutate(POP_CATEGORY = case_when(
     POPU_LSA == -3 ~ "No Population closed or temporarily closed administrative entity",
     POPU_LSA == -9 ~ "Population data suppressed for analytic purposes",
@@ -434,13 +434,45 @@ imls_out_analyze <- imls_out_2020 |>
       POPU_LSA >= 25000 & POPU_LSA < 50000  ~ "25to50K",
       POPU_LSA >= 50000 & POPU_LSA < 100000  ~ "50to100K",
       POPU_LSA >= 100000 ~ "100Kover")) |> 
-  left_join(erate_apps_2023 |> filter(!is.na(FSCSKEY) & !is.na(FSCS_SEQ)) |> distinct(FSCSKEY, FSCS_SEQ, ros_entity_number, ros_entity_name),
+  left_join(erate_apps_2023 |> filter(!is.na(FSCSKEY) & !is.na(FSCS_SEQ)) |> distinct(FSCSKEY, FSCS_SEQ, ros_entity_number, ros_entity_name, .keep_all = TRUE) |> select(FSCSKEY, FSCS_SEQ, ros_entity_number, ros_entity_name, organization_entity_type_name),
             by = c("FSCSKEY", "FSCS_SEQ"))
 ```
 
 ```{r}
 # write out a csv of select columns
 write.csv(imls_out_analyze, "~/Documents/GitHub/E-Rate/Data/2020_PLS_with_USAC_Identifiers_from_2023_Erate_Apps.csv")
+```
+
+```{r}
+# check for dupes
+imls_out_analyze %>% 
+  group_by(FSCSKEY, FSCS_SEQ) |> 
+  add_tally() |> 
+  filter(n>1 & n < 10) |> 
+  arrange(FSCSKEY, FSCS_SEQ)
+```
+
+```{r}
+# how are the dupes spread across pops?
+imls_out_analyze %>% 
+  group_by(FSCSKEY, FSCS_SEQ) |> 
+  add_tally() |> 
+  filter(n>1 & n < 10) |> 
+  ungroup() |> 
+  summarise(number = n_distinct(FSCSKEY, FSCS_SEQ))
+```
+
+```{r}
+# how are the dupes spread across pops?
+imls_out_analyze %>% 
+  group_by(FSCSKEY, FSCS_SEQ) |> 
+  add_tally() |> 
+  filter(n>1 & n < 10) |> 
+  ungroup() |> 
+  group_by(FSCSKEY, FSCS_SEQ) %>%
+  slice_head(n=1) |> 
+  ungroup() |> 
+  count(POP_CATEGORY)
 ```
 
 ```{r}
@@ -454,12 +486,13 @@ imls_out_analyze <- imls_out_analyze |>
 ```
 
 ```{r}
-imls_out_analyze |> count(POP_CATEGORY)
+imls_out_analyze |> filter(FSCS_IMLS_Match == 'Yes') |> count(POP_CATEGORY)
 ```
 
 ```{r}
 imls_out_analyze |> 
-  filter(!is.na(ros_entity_number)) |> 
+  filter(!is.na(ros_entity_number),
+         FSCS_IMLS_Match == 'Yes') |> 
   count(POP_CATEGORY)
 ```
 
