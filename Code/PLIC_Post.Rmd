@@ -136,8 +136,30 @@ nrow(imls_out_2020)
 
 ```{r}
 # We only want outlets that are not closed 
+# Also add in descriptions of locales
 imls_out_2020 <- imls_out_2020 |> 
-  filter(STATSTRU != 3)
+  filter(STATSTRU != 3) |> 
+  mutate(
+    LOCALE_DESCR = case_when(
+      LOCALE == 11 ~ "City Large",
+      LOCALE == 12 ~ "City Midsize",
+      LOCALE == 13 ~ "City Small",
+      LOCALE == 21 ~ "Suburban Large",
+      LOCALE == 22 ~ "Suburban Midsize",
+      LOCALE == 23 ~ "Suburban Small",
+      LOCALE == 31 ~ "Town Fringe",
+      LOCALE == 32 ~ "Town Distant",
+      LOCALE == 33 ~ "Town Remote",
+      LOCALE == 41 ~ "Rural Fringe",
+      LOCALE == 42 ~ "Rural Distant",
+      LOCALE == 43 ~ "Rural Remote"
+    )) %>% 
+  # separate to create high-level category
+  # https://stackoverflow.com/a/53701998
+  separate(LOCALE_DESCR, 
+        into = c("LOCALE_TOP_LEVEL_DESCR", NA),
+        sep = " ",
+        remove = F)
 ```
 
 ```{r}
@@ -465,6 +487,37 @@ cat1_2022 <- cat1_2022 |>
 ```
 
 ```{r}
+# Normalize the internet speed variable
+# Add in BEAD program benchmark variable
+cat1_2022 <- cat1_2022 |> 
+   mutate(download_speed = as.numeric(download_speed)) |>
+  mutate(download_speed_mbps = case_when(
+    form_471_download_speed_unit_name == "Mbps" ~ download_speed,
+    form_471_download_speed_unit_name == "Gbps" ~ download_speed * 1000
+  )) %>%
+  mutate(upload_speed_mbps = case_when(
+    form_471_upload_speed_unit_name == "Mbps" ~ download_speed,
+    form_471_upload_speed_unit_name == "Gbps" ~ download_speed * 1000
+  )) |> 
+  mutate(speed_benchmark = case_when(
+    POPU_LSA == -3 ~ "computation error LSA equals -3",
+    POPU_LSA == -9 ~ "computation error LSA equals -9",
+    is.na(POPU_LSA) ~ "computation error no LSA",
+    download_speed_mbps >= 100 & POPU_LSA <= 50000 ~ "bandwidth target met",
+    download_speed_mbps >= 1000 & POPU_LSA > 50000 ~ "bandwidth target met",
+    download_speed_mbps < 100 ~ "bandwidth target not met",
+    download_speed_mbps < 1000 & POPU_LSA > 50000 ~ "bandwidth target not met"
+  )) |> 
+  mutate(pop_category = case_when(
+    POPU_LSA == -3 ~ "closedAE",
+    POPU_LSA == -9 ~ "suppressed",
+    is.na(POPU_LSA) ~ "unknown",
+    POPU_LSA <= 50000 ~ "under50",
+    POPU_LSA > 50000 ~ "over50"
+  ))
+```
+
+```{r}
 # setdiff(x, y) finds all rows in x that aren't in y.
 noterate <- dplyr::setdiff(imls_out_2020 |> distinct(FSCSKEY, FSCS_SEQ), cat1_2022 |> distinct(FSCSKEY, FSCS_SEQ)) |> nrow()
 ```
@@ -502,8 +555,12 @@ cat1_2022 |>
 # Create a dataset that only includes the two purposes that begin with the words Internet access or Data connection(s)
 # Use only PLS libs
 ia_data_only <- cat1_2022 %>% 
-  filter(!is.na(FSCSKEY)) |> 
-  filter(grepl('^Internet access', form_471_purpose_name) | grepl('^Data connection(s)', form_471_purpose_name)) %>% 
+  filter(!is.na(FSCSKEY),
+         (grepl('^Internet access', form_471_purpose_name) | grepl('^Data connection(s)', form_471_purpose_name)),
+         form_471_function_name != "Miscellaneous",
+         form_471_product_name != "Data plan for portable device",
+         !is.na(form_471_download_speed_unit_name)
+         ) |> 
   add_count(ros_entity_number, name = "how_many_rows_per_lib")
 ```
 
@@ -512,5 +569,39 @@ ia_data_only <- cat1_2022 %>%
 print(unique(ia_data_only$form_471_function_name))
 print(unique(ia_data_only$form_471_product_name))
 print(unique(ia_data_only$form_471_download_speed_unit_name))
+```
+
+```{r}
+ia_data_only |> 
+  select(ros_entity_number, speed_benchmark, how_many_rows_per_lib) |> 
+  filter(how_many_rows_per_lib > 1) |> 
+  View()
+```
+
+```{r}
+ia_data_only |> 
+  select(ros_entity_number, FSCSKEY, FSCS_SEQ, pop_category, speed_benchmark, how_many_rows_per_lib) |> 
+  group_by(ros_entity_number) |> 
+  arrange(ros_entity_number, speed_benchmark) |> 
+  slice_head(n=1) |> 
+  ungroup() |> 
+  group_by(pop_category, speed_benchmark) |> 
+  summarise(n_distinct(ros_entity_number))
+```
+
+```{r}
+ia_data_only |> 
+  select(ros_entity_number, FSCSKEY, FSCS_SEQ, LOCALE_TOP_LEVEL_DESCR, speed_benchmark, how_many_rows_per_lib) |> 
+  group_by(ros_entity_number) |> 
+  arrange(ros_entity_number, speed_benchmark) |> 
+  slice_head(n=1) |> 
+  ungroup() |> 
+  group_by(LOCALE_TOP_LEVEL_DESCR, speed_benchmark) |> 
+  summarise(n_distinct(ros_entity_number))
+```
+
+```{r}
+ia_data_only |> 
+  summarise(n_distinct(ros_entity_number))
 ```
 
