@@ -483,8 +483,25 @@ cat1_2022 <- cat1_2022 |>
 ```{r}
 # Add in POPULSA from IMLS AE
 cat1_2022 <- cat1_2022 |> 
-  left_join(imls_ae_2020 |> select(FSCSKEY, POPU_LSA), by = "FSCSKEY")
+  left_join(imls_ae_2020 |> select(FSCSKEY, POPU_LSA), by = "FSCSKEY") |> 
+  # and add in Locale's from imls_out
+  left_join(imls_out_2020 |> select(FSCSKEY, FSCS_SEQ, LOCALE, LOCALE_DESCR, LOCALE_TOP_LEVEL_DESCR), by = c("FSCSKEY", "FSCS_SEQ"))
 ```
+
+```{r}
+# Add POPULSA from IMLS AE to outlets
+imls_out_2020 <- imls_out_2020 |> 
+  left_join(imls_ae_2020 |> select(FSCSKEY, POPU_LSA), by = "FSCSKEY") |> 
+  # create the population category for imls_outlets
+  mutate(pop_category = case_when(
+    POPU_LSA == -3 ~ "closedAE",
+    POPU_LSA == -9 ~ "suppressed",
+    is.na(POPU_LSA) ~ "unknown",
+    POPU_LSA <= 50000 ~ "under50",
+    POPU_LSA > 50000 ~ "over50"
+  ))
+```
+
 
 ```{r}
 # Normalize the internet speed variable
@@ -574,8 +591,7 @@ print(unique(ia_data_only$form_471_download_speed_unit_name))
 ```{r}
 ia_data_only |> 
   select(ros_entity_number, speed_benchmark, how_many_rows_per_lib) |> 
-  filter(how_many_rows_per_lib > 1) |> 
-  View()
+  filter(how_many_rows_per_lib > 1) 
 ```
 
 ```{r}
