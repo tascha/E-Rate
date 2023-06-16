@@ -507,14 +507,15 @@ imls_out_2020 <- imls_out_2020 |>
 # Normalize the internet speed variable
 # Add in BEAD program benchmark variable
 cat1_2022 <- cat1_2022 |> 
-   mutate(download_speed = as.numeric(download_speed)) |>
+  mutate(download_speed = as.numeric(download_speed),
+         upload_speed = as.numeric(upload_speed)) |>
   mutate(download_speed_mbps = case_when(
     form_471_download_speed_unit_name == "Mbps" ~ download_speed,
     form_471_download_speed_unit_name == "Gbps" ~ download_speed * 1000
   )) %>%
   mutate(upload_speed_mbps = case_when(
-    form_471_upload_speed_unit_name == "Mbps" ~ download_speed,
-    form_471_upload_speed_unit_name == "Gbps" ~ download_speed * 1000
+    form_471_upload_speed_unit_name == "Mbps" ~ upload_speed,
+    form_471_upload_speed_unit_name == "Gbps" ~ upload_speed * 1000
   )) |> 
   mutate(speed_benchmark = case_when(
     POPU_LSA == -3 ~ "computation error LSA equals -3",
@@ -531,6 +532,10 @@ cat1_2022 <- cat1_2022 |>
     is.na(POPU_LSA) ~ "unknown",
     POPU_LSA <= 50000 ~ "under50",
     POPU_LSA > 50000 ~ "over50"
+  )) |> 
+  mutate(symmetrical_gig = case_when(
+    download_speed_mbps >= 1000 & upload_speed_mbps >= 1000 ~ TRUE,
+    .default = FALSE
   ))
 ```
 
@@ -543,6 +548,32 @@ noterate <- dplyr::setdiff(imls_out_2020 |> distinct(FSCSKEY, FSCS_SEQ), cat1_20
 # How many PLS outlets are also in our Cat1 dataset?
 nrow(imls_out_2020) - noterate
 ```
+
+```{r}
+imls_out_2020 <- imls_out_2020 |> 
+  left_join(cat1_2022 |>
+              filter(ros_entity_type != "non-instructional facility (nif)") |> 
+              distinct(FSCSKEY, FSCS_SEQ, Cat1_Commitment_2022 = TRUE),
+            by = c("FSCSKEY", "FSCS_SEQ")) 
+```
+
+```{r}
+# Replace NA with false in one column
+imls_out_2020 <- imls_out_2020 |> 
+  mutate(Cat1_Commitment_2022 = ifelse(is.na(Cat1_Commitment_2022), FALSE, Cat1_Commitment_2022))
+```
+
+```{r}
+# Save the imls_out_2020 file to Github for reference
+write.csv(imls_out_2020, "~/Documents/GitHub/E-Rate/Data/2020_Open_IMLS_Outlets_with_2022_Erate_Cat1_Commitment_Binary_Column.csv")
+```
+
+```{r}
+imls_out_2020 |> 
+  filter(Cat1_Commitment_2022 == TRUE) |> 
+  nrow()
+```
+
 
 ```{r}
 # What is the percentage of outlets also in the Cat1 dataset?
@@ -576,10 +607,23 @@ ia_data_only <- cat1_2022 %>%
          (grepl('^Internet access', form_471_purpose_name) | grepl('^Data connection(s)', form_471_purpose_name)),
          form_471_function_name != "Miscellaneous",
          form_471_product_name != "Data plan for portable device",
-         !is.na(form_471_download_speed_unit_name)
+         !is.na(form_471_download_speed_unit_name),
+         ros_entity_type != "non-instructional facility (nif)"
          ) |> 
   add_count(ros_entity_number, name = "how_many_rows_per_lib")
 ```
+
+```{r}
+ia_data_only |> 
+  summarise(n_distinct(ros_entity_number))
+```
+
+```{r}
+ia_data_only |> 
+  group_by(how_many_rows_per_lib) |> 
+  summarise(n_distinct(ros_entity_number))
+```
+
 
 ```{r}
 # Check to see how the purpose filtering affects a few other columns
@@ -595,6 +639,31 @@ ia_data_only |>
 ```
 
 ```{r}
+# How many libs have download speed of at least 1000
+ia_data_only |> 
+  select(ros_entity_number, FSCSKEY, FSCS_SEQ, pop_category, download_speed_mbps, how_many_rows_per_lib) |> 
+  group_by(ros_entity_number) |> 
+  arrange(ros_entity_number, desc(download_speed_mbps)) |> 
+  slice_head(n=1) |> 
+  ungroup() |> 
+  filter(download_speed_mbps > 999) |> 
+  summarise(n_distinct(ros_entity_number))
+```
+
+
+```{r}
+# How many libraries meet the FCC target?
+ia_data_only |> 
+  select(ros_entity_number, FSCSKEY, FSCS_SEQ, pop_category, speed_benchmark, how_many_rows_per_lib) |> 
+  group_by(ros_entity_number) |> 
+  arrange(ros_entity_number, speed_benchmark) |> 
+  slice_head(n=1) |> 
+  ungroup() |> 
+  group_by(speed_benchmark) |> 
+  summarise(n_distinct(ros_entity_number))
+```
+
+```{r}
 ia_data_only |> 
   select(ros_entity_number, FSCSKEY, FSCS_SEQ, pop_category, speed_benchmark, how_many_rows_per_lib) |> 
   group_by(ros_entity_number) |> 
@@ -604,6 +673,14 @@ ia_data_only |>
   group_by(pop_category, speed_benchmark) |> 
   summarise(n_distinct(ros_entity_number))
 ```
+
+```{r}
+# Find the denominator of how many libs are in each category
+imls_out_2020 |> 
+  group_by(pop_category) |> 
+  summarise(n_distinct(FSCSKEY, FSCS_SEQ))
+```
+
 
 ```{r}
 ia_data_only |> 
@@ -617,7 +694,21 @@ ia_data_only |>
 ```
 
 ```{r}
+# Find the denominator of how many libs are in each category
+imls_out_2020 |> 
+  group_by(LOCALE_TOP_LEVEL_DESCR) |> 
+  summarise(n_distinct(FSCSKEY, FSCS_SEQ))
+```
+
+```{r}
 ia_data_only |> 
+  select(ros_entity_number, FSCSKEY, FSCS_SEQ, form_471_function_name, speed_benchmark, how_many_rows_per_lib) |> 
+  group_by(ros_entity_number) |> 
+  arrange(ros_entity_number, speed_benchmark) |> 
+  slice_head(n=1) |> 
+  ungroup() |> 
+  group_by(form_471_function_name, speed_benchmark) |> 
   summarise(n_distinct(ros_entity_number))
 ```
+
 
