@@ -45,6 +45,7 @@ imls_ae_2020 <- s3read_using(FUN = read.csv, object = "data/IMLS_PLS/2020_IMLS_P
 imls_out_2020 <- s3read_using(FUN = read.csv, object = "data/IMLS_PLS/2020_IMLS_PLS_OUTLET.csv", bucket = "erate-data")
 ```
 
+
 ```{r}
 # We only want outlets that are not closed 
 imls_out_2020 <- imls_out_2020 |> 
