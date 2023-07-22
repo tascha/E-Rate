@@ -474,16 +474,19 @@ matches %>%
 
 ```{r}
 # Remove the dfs from the matching script
-rm(erate_libs_for_matching, fuzzy_string_test, geo_matches_imls, geo_string_match, geo_list, hand_matches, hand_matches_no_ae, imls_unique_entities, name_list, name_matches_zip, non_matches, iden_list, states_intersect)
+rm(erate_libs_for_matching, fuzzy_string_test, geo_matches_imls, geo_string_match, geo_list, hand_matches, hand_matches_no_ae, imls_unique_entities, name_list, name_matches_zip, non_matches, states_intersect)
 ```
 
 ```{r}
-# Now add the matches into the erate dataset
+# Now add the matches into the erate dataset and add in the C_OUT_TY field from IMLS so we can filter on it
 cat1_2022 <- cat1_2022 |> 
   mutate(ros_entity_number = as.numeric(ros_entity_number)) |> 
   left_join(matches |> select(-ros_physical_state),
             by = "ros_entity_number") |> 
-  relocate(c(FSCSKEY, FSCS_SEQ), .after = ros_entity_number) # relocate FSCSKEY and FSCS_SEQ column
+  left_join(imls_out_2021 |> 
+              select(FSCSKEY, FSCS_SEQ, C_OUT_TY),
+            by = c("FSCSKEY", "FSCS_SEQ")) |>
+  relocate(c(FSCSKEY, FSCS_SEQ, C_OUT_TY), .after = ros_entity_number)
 ```
 
 ```{r}
@@ -547,20 +550,17 @@ cat1_2022 <- cat1_2022 |>
 ```
 
 ```{r}
-# setdiff(x, y) finds all rows in x that aren't in y.
-# counts the FSCS that do not have a match in the cat1 dataset
-# filter out NIFs first from Cat1 dataset
-noterate <- dplyr::setdiff(imls_out_2021 |> distinct(FSCSKEY, FSCS_SEQ), cat1_2022 |> filter(ros_entity_type != "non-instructional facility (nif)") |> distinct(FSCSKEY, FSCS_SEQ)) |> nrow()
+# How many outlets in the cat1_2022 dataset right now?
+cat1_2022 |> summarise(n_distinct(FSCSKEY, FSCS_SEQ),
+                       n_distinct(ros_entity_number))
 ```
 
-```{r}
-# Output the outlets that do not match to an entity in the Cat1 dataset
-dplyr::setdiff(imls_out_2021 |> distinct(FSCSKEY, FSCS_SEQ), cat1_2022 |> filter(ros_entity_type != "non-instructional facility (nif)") |> distinct(FSCSKEY, FSCS_SEQ))
-```
 
 ```{r}
-# How many PLS outlets are also in our Cat1 dataset?
-nrow(imls_out_2021) - noterate
+# How many outlets in the cat1_2022 dataset right now that aren't IMLS bookmobiles?
+cat1_2022 |> filter(is.na(C_OUT_TY) | C_OUT_TY %in% c('BR', 'CE')) |> 
+  summarise(n_distinct(FSCSKEY, FSCS_SEQ),
+            n_distinct(ros_entity_number))
 ```
 
 ```{r}
@@ -580,7 +580,8 @@ write.csv(imls_out_2021, "~/Documents/GitHub/E-Rate/Data/2021_IMLS_CEandBR_Outle
 
 ```{r}
 imls_out_2021 |> 
-  filter(Cat1_Commitment_2022 == TRUE) |> 
+  filter(Cat1_Commitment_2022 == TRUE,
+         C_OUT_TY %in% c('BR', 'CE')) |> 
   nrow()
 ```
 
