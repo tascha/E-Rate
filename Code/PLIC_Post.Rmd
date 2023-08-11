@@ -579,15 +579,11 @@ write.csv(imls_out_2021, "~/Documents/GitHub/E-Rate/Data/2021_IMLS_CEandBR_Outle
 ```
 
 ```{r}
+# How many outlets that are branches or centrals rec'd CAt1 commitments?
 imls_out_2021 |> 
   filter(Cat1_Commitment_2022 == TRUE,
          C_OUT_TY %in% c('BR', 'CE')) |> 
   nrow()
-```
-
-```{r}
-# What is the percentage of outlets also in the Cat1 dataset?
-(nrow(imls_out_2021) - noterate)/nrow(imls_out_2021)
 ```
 
 ```{r}
@@ -604,12 +600,6 @@ cat1_2022 <- cat1_2022 |>
 ```
 
 ```{r}
-# How many imls entities are in our dataset?
-cat1_2022 |> 
-  summarise(n_distinct(FSCSKEY, FSCS_SEQ, na.rm = TRUE), n_distinct(ros_entity_number, na.rm = TRUE))
-```
-
-```{r}
 # Count the distinct imls entities in the dataset we will create below
 cat1_2022 %>% 
   mutate(imls_iden = paste(FSCSKEY, FSCS_SEQ, sep = "_")) |> 
@@ -618,7 +608,8 @@ cat1_2022 %>%
          form_471_function_name != "Miscellaneous",
          form_471_product_name != "Data plan for portable device",
          !is.na(form_471_download_speed_unit_name),
-         ros_entity_type != "non-instructional facility (nif)"
+         ros_entity_type != "non-instructional facility (nif)",
+         C_OUT_TY %in% c('BR', 'CE')
          ) |> 
   summarise(n_distinct(imls_iden, na.rm = T), n_distinct(ros_entity_number, na.rm = TRUE))
 ```
@@ -626,7 +617,7 @@ cat1_2022 %>%
 ```{r}
 # Create a dataset that only includes the two purposes that begin with the words Internet access 
 # and the one that begins with Data connection(s)
-# Use only PLS libs
+# Use only PLS libs that are branches or centrals
 
 # One dataset for those entites with a single application
 ia_purposes_singleapp <- cat1_2022 %>% 
@@ -636,7 +627,8 @@ ia_purposes_singleapp <- cat1_2022 %>%
          form_471_function_name != "Miscellaneous",
          form_471_product_name != "Data plan for portable device",
          !is.na(form_471_download_speed_unit_name),
-         ros_entity_type != "non-instructional facility (nif)"
+         ros_entity_type != "non-instructional facility (nif)",
+         C_OUT_TY %in% c('BR', 'CE')
          ) |> 
   add_count(imls_iden, name = "how_many_rows_per_lib") |> 
   filter(how_many_rows_per_lib == 1)
@@ -651,7 +643,8 @@ ia_purposes_multiapp <- cat1_2022 %>%
          form_471_function_name != "Miscellaneous",
          form_471_product_name != "Data plan for portable device",
          !is.na(form_471_download_speed_unit_name),
-         ros_entity_type != "non-instructional facility (nif)"
+         ros_entity_type != "non-instructional facility (nif)",
+         C_OUT_TY %in% c('BR', 'CE')
          ) |> 
   add_count(imls_iden, name = "how_many_rows_per_lib") |> 
   filter(how_many_rows_per_lib > 1)
@@ -861,6 +854,43 @@ ia_purposes |>
   select(ros_entity_number, FSCSKEY, FSCS_SEQ, ros_entity_name, ros_physical_city, ros_physical_state, application_number, form_471_line_item_number, upload_speed_mbps, download_speed_mbps, form_471_function_name, form_471_product_name) |>
   write.csv("~/Documents/GitHub/E-Rate/Data/2022_Libraries_without_1G_symmetrical_capability.csv")
 ```
+
+```{r}
+# Write out a csv for Chris
+# Include lat/lon, FCC, BEAD, connection types
+ia_purposes |> 
+  select(ros_entity_number, 
+         FSCSKEY, 
+         FSCS_SEQ, 
+         ros_entity_name, 
+         ros_physical_address, 
+         ros_physical_city, 
+         ros_physical_state, 
+         ros_physical_zipcode,
+         ros_latitude,
+         ros_longitude,
+         organization_entity_type_name,
+         application_number,
+         funding_request_number,
+         form_471_line_item_number,
+         spin_name,
+         form_471_service_type_name,
+         form_471_function_name,
+         form_471_product_name,
+         form_471_frn_fiber_type_name,
+         form_471_frn_fiber_sub_type_name,
+         form_471_purpose_name,
+         download_speed_mbps,
+         upload_speed_mbps,
+         POPU_LSA,
+         LOCALE,
+         fcc_speed_benchmark,
+         pop_category,
+         symmetrical_gig,
+         bead_class) |> 
+  write.csv("~/Documents/GitHub/E-Rate/Data/2022_Internet_Access_with_Purpose_2021_IMLS_Entities_Single_Row_Minified.csv")
+```
+
 
 # Fourth purpose
 ## Data Connection between two or more sites entirely within the applicant’s network
