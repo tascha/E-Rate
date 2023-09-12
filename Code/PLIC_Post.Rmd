@@ -122,10 +122,10 @@ purpose <-
 ```
 
 ```{r}
-# Read in IMLS PLS AE 2020 dataset stored in S3
+# Read in IMLS PLS AE 2021 dataset stored in S3
 imls_ae_2021 <- s3read_using(FUN = read.csv, object = "data/IMLS_PLS/2021_IMLS_PLS_AE.csv", bucket = "erate-data")
 
-# Read in IMLS PLS AE 2020 dataset stored in S3
+# Read in IMLS PLS AE 2021 dataset stored in S3
 imls_out_2021 <- s3read_using(FUN = read.csv, object = "data/IMLS_PLS/2021_IMLS_PLS_OUTLET.csv", bucket = "erate-data")
 ```
 
@@ -488,6 +488,20 @@ cat1_2022 <- cat1_2022 |>
             by = c("FSCSKEY", "FSCS_SEQ")) |>
   relocate(c(FSCSKEY, FSCS_SEQ, C_OUT_TY), .after = ros_entity_number)
 ```
+
+```{r}
+# Chris wants a dataset of counts of imls entities grouped by discount percent
+cat1_2022 |> 
+  filter(!is.na(FSCSKEY),
+         C_OUT_TY %in% c('BR', 'CE')) |> 
+  distinct(ros_entity_number, dis_pct) |> 
+  group_by(dis_pct) |> 
+  summarise(num_libs = n_distinct(ros_entity_number)) |> 
+  ungroup() |> 
+  mutate(portion_of_total = round(num_libs / sum(num_libs), 2)) |> 
+  write.csv("~/Documents/GitHub/E-Rate/Data/2022_Cat1_IMLS-BR-CE_Libs_by_Discount_Percent.csv")
+```
+
 
 ```{r}
 # Add in POPULSA from IMLS AE
@@ -908,7 +922,8 @@ ia_4purpose_singleapp <- cat1_2022 %>%
          form_471_function_name != "Miscellaneous",
          form_471_product_name != "Data plan for portable device",
          !is.na(form_471_download_speed_unit_name),
-         ros_entity_type != "non-instructional facility (nif)"
+         ros_entity_type != "non-instructional facility (nif)",
+         C_OUT_TY %in% c('BR', 'CE')
          ) |> 
   add_count(imls_iden, name = "how_many_rows_per_lib") |> 
   filter(how_many_rows_per_lib == 1)
@@ -923,7 +938,8 @@ ia_4purpose_multiapp <- cat1_2022 %>%
          form_471_function_name != "Miscellaneous",
          form_471_product_name != "Data plan for portable device",
          !is.na(form_471_download_speed_unit_name),
-         ros_entity_type != "non-instructional facility (nif)"
+         ros_entity_type != "non-instructional facility (nif)",
+         C_OUT_TY %in% c('BR', 'CE')
          ) |> 
   add_count(imls_iden, name = "how_many_rows_per_lib") |> 
   filter(how_many_rows_per_lib > 1)
@@ -1137,4 +1153,10 @@ ia_4purpose |>
   summarise(n_distinct(imls_iden))
 ```
 
+```{r}
+# Count how many entities have 4th purpose only by state
+ia_4purpose |> 
+  #group_by(ros_physical_state) |> 
+  count(ros_physical_state)
+```
 

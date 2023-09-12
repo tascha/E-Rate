@@ -394,7 +394,9 @@ erate |>
 # Count entities in erate dataset by State and funding year
 erate |> 
   filter(C_OUT_TY %in% c('BR', 'CE'),
-         !is.na(FSCSKEY)) |> 
+         !is.na(FSCSKEY),
+         ros_entity_type != "non-instructional facility (nif)"
+         ) |> 
   group_by(ros_physical_state, chosen_category_of_service, funding_year) |> 
   summarise(entities_committed = n_distinct(ros_entity_number)) |> 
   pivot_wider(names_from = chosen_category_of_service, values_from = entities_committed) |> 
@@ -403,11 +405,19 @@ erate |>
               group_by(STABR) |>
               summarise(Entities_2021 = n()),
             join_by('ros_physical_state' == 'STABR')) |> 
-  summarise(across(Category1:Category2, ~ round(.x/Entities_2021, 3))) |> 
+  mutate(across(Category1:Category2, ~ round(.x/Entities_2021, 3))) |> 
+  select(-Entities_2021) |> 
   write.csv("~/Documents/GitHub/E-Rate/Data/Commitment_Percentages_by_State.csv")
 
 ```
 
+```{r}
+# What can we tell about MO
+erate |> 
+  filter(ros_physical_state == "MO") |> 
+  group_by(funding_year, chosen_category_of_service) |> 
+  summarise(n_distinct(ros_entity_number))
+```
 
 
 
