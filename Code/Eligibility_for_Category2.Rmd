@@ -2,7 +2,7 @@
 title: "Research About Eligibility for Category 2 Funding"
 author: "Bree Norlander"
 date: "`r format(Sys.time(), '%B %d, %Y')`"
-output: html_notebook
+#output: html_notebook
 ---
 
 ```{r}
