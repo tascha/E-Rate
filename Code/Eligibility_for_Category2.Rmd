@@ -1,5 +1,5 @@
 ---
-title: "Internet Affordability Research from E-rate Data"
+title: "Research About Eligibility for Category 2 Funding"
 author: "Bree Norlander"
 date: "`r format(Sys.time(), '%B %d, %Y')`"
 output: html_notebook
