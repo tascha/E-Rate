@@ -1,0 +1,937 @@
+---
+title: "Broadband Affordability Research"
+author: "Bree Norlander"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+#output: html_notebook
+---
+
+Affordability research
+We’d take data from the Commitments dataset and look at monthly cost to arrive at a per Mbps figures the primary affordability figure
+We’d take this base measure across multiple program years for any library that received a commitment in the post-modernization period (2016 – 2023)
+We could look at this through various filters / lenses:
+Rural vs urban – in which locale is the average cost higher?
+Discount bands – do higher discount bands pay more or less (pre-discount)?
+Connection type – do fiber, copper, wireless, or other connection types have higher or lower average costs?
+Application Type – do consortium vs library / library system applications have higher or lower costs?
+
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(ggplot2)
+library(aws.s3)
+library(janitor)
+```
+
+## Read in data:
+
+```{r}
+# Read in 2022 cat1 erate data
+cat1_2022 <-
+  s3read_using(
+    FUN = read.csv,
+    na.strings = c("", " ", "N/A", "n/a"),
+    object = "2022_Libraries_Funded_Committed_Category_1.csv",
+    bucket = "erate-data/data/AVI8-SVP9_Commitments"
+  )
+
+# Read in IMLS USAC matches
+matches <-
+  s3read_using(
+    FUN = read.csv,
+    na.strings = c("", " ", "N/A", "n/a"),
+    object = "Algorithmic_Matches.csv",
+    bucket = "erate-data/data/USAC_IMLS_Match"
+  )
+```
+
+```{r}
+# Read in IMLS PLS AE 2021 dataset stored in S3
+imls_ae_2021 <- s3read_using(FUN = read.csv, object = "data/IMLS_PLS/2021_IMLS_PLS_AE.csv", bucket = "erate-data")
+
+# Read in IMLS PLS AE 2021 dataset stored in S3
+imls_out_2021 <- s3read_using(FUN = read.csv, object = "data/IMLS_PLS/2021_IMLS_PLS_OUTLET.csv", bucket = "erate-data")
+```
+
+```{r}
+# Add in descriptions of locales
+imls_out_2021 <- imls_out_2021 |> 
+  mutate(
+    LOCALE_DESCR = case_when(
+      LOCALE == 11 ~ "City Large",
+      LOCALE == 12 ~ "City Midsize",
+      LOCALE == 13 ~ "City Small",
+      LOCALE == 21 ~ "Suburban Large",
+      LOCALE == 22 ~ "Suburban Midsize",
+      LOCALE == 23 ~ "Suburban Small",
+      LOCALE == 31 ~ "Town Fringe",
+      LOCALE == 32 ~ "Town Distant",
+      LOCALE == 33 ~ "Town Remote",
+      LOCALE == 41 ~ "Rural Fringe",
+      LOCALE == 42 ~ "Rural Distant",
+      LOCALE == 43 ~ "Rural Remote"
+    )) %>% 
+  # separate to create high-level category
+  # https://stackoverflow.com/a/53701998
+  separate(LOCALE_DESCR, 
+        into = c("LOCALE_TOP_LEVEL_DESCR", NA),
+        sep = " ",
+        remove = F)
+```
+
+# Add in the FSCSKEY and FSCS_SEQ to USAC data
+
+```{r}
+# Add in IMLS designators and normalize the upload/download speeds
+cat1_2022_wrangled <- cat1_2022 |>
+  left_join(matches |> select(FSCSKEY, FSCS_SEQ, ros_entity_number),
+            by = join_by(ros_entity_number)) |>
+  mutate(
+    download_speed_mbps = case_when(
+      form_471_download_speed_unit_name == "Mbps" ~ as.numeric(download_speed),
+      form_471_download_speed_unit_name == "Gbps" ~ as.numeric(download_speed) * 1000
+    )
+  ) %>%
+  mutate(
+    upload_speed_mbps = case_when(
+      form_471_upload_speed_unit_name == "Mbps" ~ as.numeric(upload_speed),
+      form_471_upload_speed_unit_name == "Gbps" ~ as.numeric(upload_speed) * 1000
+    )
+  ) |>
+  mutate(download_cost_per_mbps_per_month = case_when(
+    !is.na(monthly_recurring_unit_eligible_costs) &&
+      !is.na(download_speed_mbps) ~ as.numeric(monthly_recurring_unit_eligible_costs) /
+      as.numeric(download_speed_mbps)
+  ))
+```
+
+```{r}
+# Create a dataframe of just the columns we want for analysis
+afford_df <- cat1_2022_wrangled |> 
+  filter(!is.na(FSCSKEY)) |> 
+  distinct(ros_entity_number, ros_entity_name, ros_entity_type, ros_subtype, ros_physical_state, ros_urban_rural_status, billed_entity_number, organization_name, organization_entity_type_name, org_state, funding_year, form_471_line_item_number, form_471_function_name, form_471_product_name, total_monthly_cost, monthly_recurring_unit_eligible_costs, download_speed_mbps, upload_speed_mbps, download_cost_per_mbps_per_month)
+```
+
+```{r}
+afford_df |> 
+  add_count(ros_entity_number, form_471_function_name, form_471_product_name, name="how_many_rows")
+```
+
+
+```{r}
+# One dataset with entities that have multiple apps - we will filter this down to one app
+ia_purposes_multiapp <- cat1_2022 %>% 
+  mutate(imls_iden = paste(FSCSKEY, FSCS_SEQ, sep = "_")) |> 
+  filter(!is.na(FSCSKEY),
+         (grepl('^Internet access', form_471_purpose_name) | grepl('^Data connection(s)', form_471_purpose_name)),
+         form_471_function_name != "Miscellaneous",
+         form_471_product_name != "Data plan for portable device",
+         !is.na(form_471_download_speed_unit_name),
+         ros_entity_type != "non-instructional facility (nif)",
+         C_OUT_TY %in% c('BR', 'CE')
+         ) |> 
+  add_count(imls_iden, name = "how_many_rows_per_lib") |> 
+  filter(how_many_rows_per_lib > 1)
+
+done1 <- ia_purposes_multiapp |> 
+  group_by(imls_iden) |> 
+  slice_max(download_speed_mbps, with_ties = T) |> 
+  ungroup() |> 
+  add_count(imls_iden, name = "how_many_rows_per_lib_2") |> 
+  filter(how_many_rows_per_lib_2 == 1)
+
+done2 <- ia_purposes_multiapp |> 
+  group_by(imls_iden) |> 
+  slice_max(download_speed_mbps, with_ties = T) |> 
+  ungroup() |> 
+  add_count(imls_iden, name = "how_many_rows_per_lib_2") |>  
+  filter(how_many_rows_per_lib_2 > 1) |> 
+  group_by(imls_iden) |> 
+  slice_max(upload_speed_mbps, with_ties = T) |> 
+  ungroup() |>
+  add_count(imls_iden, name = "how_many_rows_per_lib_3") |> 
+  filter(how_many_rows_per_lib_3 == 1)
+
+done3 <- ia_purposes_multiapp |> 
+  group_by(imls_iden) |> 
+  slice_max(download_speed_mbps, with_ties = T) |> 
+  ungroup() |> 
+  add_count(imls_iden, name = "how_many_rows_per_lib_2") |>  
+  filter(how_many_rows_per_lib_2 > 1) |> 
+  group_by(imls_iden) |> 
+  slice_max(upload_speed_mbps, with_ties = T) |> 
+  ungroup() |>
+  add_count(imls_iden, name = "how_many_rows_per_lib_3") |> 
+  filter(how_many_rows_per_lib_3 > 1) |> 
+  mutate(function_rank = case_when(
+    form_471_function_name == "Fiber" ~ 1,
+    form_471_function_name == "Copper" & form_471_product_name == "Cable Modem" ~ 2,
+    .default = 9
+  )) |> 
+  group_by(imls_iden) |> 
+  slice_min(function_rank, with_ties = T) |> 
+  ungroup() |>
+  add_count(imls_iden, name = "how_many_rows_per_lib_4") |> 
+  filter(how_many_rows_per_lib_4 == 1)
+
+done4 <- ia_purposes_multiapp |> 
+  group_by(imls_iden) |> 
+  slice_max(download_speed_mbps, with_ties = T) |> 
+  ungroup() |> 
+  add_count(imls_iden, name = "how_many_rows_per_lib_2") |>  
+  filter(how_many_rows_per_lib_2 > 1) |> 
+  group_by(imls_iden) |> 
+  slice_max(upload_speed_mbps, with_ties = T) |> 
+  ungroup() |>
+  add_count(imls_iden, name = "how_many_rows_per_lib_3") |> 
+  filter(how_many_rows_per_lib_3 > 1) |> 
+  mutate(function_rank = case_when(
+    form_471_function_name == "Fiber" ~ 1,
+    form_471_function_name == "Copper" & form_471_product_name == "Cable Modem" ~ 2,
+    .default = 9
+  )) |> 
+  group_by(imls_iden) |> 
+  slice_min(function_rank, with_ties = T) |> 
+  ungroup() |>
+  add_count(imls_iden, name = "how_many_rows_per_lib_4") |> 
+  filter(how_many_rows_per_lib_4 > 1) |> 
+  group_by(imls_iden) |> 
+  slice_max(total_monthly_cost, with_ties = T) |> 
+  ungroup() |>
+  add_count(imls_iden, name = "how_many_rows_per_lib_5") |> 
+  filter(how_many_rows_per_lib_5 == 1)
+
+done5 <- ia_purposes_multiapp |> 
+  group_by(imls_iden) |> 
+  slice_max(download_speed_mbps, with_ties = T) |> 
+  ungroup() |> 
+  add_count(imls_iden, name = "how_many_rows_per_lib_2") |>  
+  filter(how_many_rows_per_lib_2 > 1) |> 
+  group_by(imls_iden) |> 
+  slice_max(upload_speed_mbps, with_ties = T) |> 
+  ungroup() |>
+  add_count(imls_iden, name = "how_many_rows_per_lib_3") |> 
+  filter(how_many_rows_per_lib_3 > 1) |> 
+  mutate(function_rank = case_when(
+    form_471_function_name == "Fiber" ~ 1,
+    form_471_function_name == "Copper" & form_471_product_name == "Cable Modem" ~ 2,
+    .default = 9
+  )) |> 
+  group_by(imls_iden) |> 
+  slice_min(function_rank, with_ties = T) |> 
+  ungroup() |>
+  add_count(imls_iden, name = "how_many_rows_per_lib_4") |> 
+  filter(how_many_rows_per_lib_4 > 1) |> 
+  group_by(imls_iden) |> 
+  slice_max(total_monthly_cost, with_ties = T) |> 
+  ungroup() |>
+  add_count(imls_iden, name = "how_many_rows_per_lib_5") |> 
+  filter(how_many_rows_per_lib_5 > 1) |> 
+  group_by(imls_iden) |> 
+  slice_head(n=1) 
+```
+
+```{r}
+# bind all the single entity dataframes
+ia_purposes <- rbind(ia_purposes_singleapp,
+      done1 |> 
+        select(-how_many_rows_per_lib_2),
+      done2 |> 
+        select(-how_many_rows_per_lib_2, -how_many_rows_per_lib_3),
+      done3 |> 
+        select(-how_many_rows_per_lib_2, -how_many_rows_per_lib_3, -how_many_rows_per_lib_4, -function_rank),
+      done4 |> 
+        select(-how_many_rows_per_lib_2, -how_many_rows_per_lib_3, -how_many_rows_per_lib_4, -function_rank, -how_many_rows_per_lib_5),
+      done5 |> 
+        select(-how_many_rows_per_lib_2, -how_many_rows_per_lib_3, -how_many_rows_per_lib_4, -function_rank, -how_many_rows_per_lib_5)
+)
+```
+
+
+
+
+
+
+
+```{r}
+# Now add the matches into the erate dataset and add in the C_OUT_TY field from IMLS so we can filter on it
+cat1_2022 <- cat1_2022 |> 
+  mutate(ros_entity_number = as.numeric(ros_entity_number)) |> 
+  left_join(imls_out_2021 |> 
+              select(FSCSKEY, FSCS_SEQ, C_OUT_TY),
+            by = c("FSCSKEY", "FSCS_SEQ")) |>
+  relocate(c(FSCSKEY, FSCS_SEQ, C_OUT_TY), .after = ros_entity_number)
+```
+
+```{r}
+# Chris wants a dataset of counts of imls entities grouped by discount percent
+cat1_2022 |> 
+  filter(!is.na(FSCSKEY),
+         C_OUT_TY %in% c('BR', 'CE')) |> 
+  distinct(ros_entity_number, dis_pct) |> 
+  group_by(dis_pct) |> 
+  summarise(num_libs = n_distinct(ros_entity_number)) |> 
+  ungroup() |> 
+  mutate(portion_of_total = round(num_libs / sum(num_libs), 2)) |> 
+  write.csv("~/Documents/GitHub/E-Rate/Data/2022_Cat1_IMLS-BR-CE_Libs_by_Discount_Percent.csv")
+```
+
+
+```{r}
+# Add in POPULSA from IMLS AE
+cat1_2022 <- cat1_2022 |> 
+  left_join(imls_ae_2021 |> select(FSCSKEY, POPU_LSA), by = "FSCSKEY") |> 
+  # and add in Locale's from imls_out
+  left_join(imls_out_2021 |> select(FSCSKEY, FSCS_SEQ, LOCALE, LOCALE_DESCR, LOCALE_TOP_LEVEL_DESCR), by = c("FSCSKEY", "FSCS_SEQ"))
+```
+
+```{r}
+# Add POPULSA from IMLS AE to outlets
+imls_out_2021 <- imls_out_2021 |> 
+  left_join(imls_ae_2021 |> select(FSCSKEY, POPU_LSA), by = "FSCSKEY") |> 
+  # create the population category for imls_outlets
+  mutate(pop_category = case_when(
+    POPU_LSA == -3 ~ "closedAE",
+    POPU_LSA == -9 ~ "suppressed",
+    is.na(POPU_LSA) ~ "unknown",
+    POPU_LSA < 50000 ~ "under50",
+    POPU_LSA >= 50000 ~ "over50"
+  ))
+```
+
+
+```{r}
+# Normalize the internet speed variable
+# Add in FCC benchmark
+# Add in BEAD program benchmark variable
+cat1_2022 <- cat1_2022 |> 
+  mutate(download_speed = as.numeric(download_speed),
+         upload_speed = as.numeric(upload_speed)) |>
+  mutate(download_speed_mbps = case_when(
+    form_471_download_speed_unit_name == "Mbps" ~ download_speed,
+    form_471_download_speed_unit_name == "Gbps" ~ download_speed * 1000
+  )) %>%
+  mutate(upload_speed_mbps = case_when(
+    form_471_upload_speed_unit_name == "Mbps" ~ upload_speed,
+    form_471_upload_speed_unit_name == "Gbps" ~ upload_speed * 1000
+  )) |> 
+  mutate(fcc_speed_benchmark = case_when(
+    POPU_LSA == -3 ~ "computation error LSA equals -3",
+    POPU_LSA == -9 ~ "computation error LSA equals -9",
+    is.na(POPU_LSA) ~ "computation error no LSA",
+    download_speed_mbps >= 100 & POPU_LSA < 50000 ~ "bandwidth target met",
+    download_speed_mbps >= 1000 & POPU_LSA >= 50000 ~ "bandwidth target met",
+    download_speed_mbps < 100 ~ "bandwidth target not met",
+    download_speed_mbps < 1000 & POPU_LSA >= 50000 ~ "bandwidth target not met"
+  )) |> 
+  mutate(pop_category = case_when(
+    POPU_LSA == -3 ~ "closedAE",
+    POPU_LSA == -9 ~ "suppressed",
+    is.na(POPU_LSA) ~ "unknown",
+    POPU_LSA < 50000 ~ "under50",
+    POPU_LSA >= 50000 ~ "over50"
+  )) |> 
+  mutate(symmetrical_gig = case_when(
+    download_speed_mbps >= 1000 & upload_speed_mbps >= 1000 ~ TRUE,
+    .default = FALSE
+  ))
+```
+
+```{r}
+# How many outlets in the cat1_2022 dataset right now?
+cat1_2022 |> summarise(n_distinct(FSCSKEY, FSCS_SEQ),
+                       n_distinct(ros_entity_number))
+```
+
+
+```{r}
+# How many outlets in the cat1_2022 dataset right now that aren't IMLS bookmobiles?
+cat1_2022 |> filter(is.na(C_OUT_TY) | C_OUT_TY %in% c('BR', 'CE')) |> 
+  summarise(n_distinct(FSCSKEY, FSCS_SEQ),
+            n_distinct(ros_entity_number))
+```
+
+```{r}
+# Add a column into imls_out_2021 indicating if the outlet rec'd a Cat1 commitment
+imls_out_2021 <- imls_out_2021 |> 
+  left_join(cat1_2022 |>
+              filter(ros_entity_type != "non-instructional facility (nif)") |> 
+              distinct(FSCSKEY, FSCS_SEQ, Cat1_Commitment_2022 = TRUE),
+            by = c("FSCSKEY", "FSCS_SEQ")) |> 
+  mutate(Cat1_Commitment_2022 = ifelse(is.na(Cat1_Commitment_2022), FALSE, Cat1_Commitment_2022))
+```
+
+```{r}
+# Save the imls_out_2021 file to Github for reference
+write.csv(imls_out_2021, "~/Documents/GitHub/E-Rate/Data/2021_IMLS_CEandBR_Outlets_with_2022_Erate_Cat1_Commitment_Binary_Column.csv")
+```
+
+```{r}
+# How many outlets that are branches or centrals rec'd CAt1 commitments?
+imls_out_2021 |> 
+  filter(Cat1_Commitment_2022 == TRUE,
+         C_OUT_TY %in% c('BR', 'CE')) |> 
+  nrow()
+```
+
+```{r}
+# Join cat1_2022 to purpose dataset
+cat1_2022 <- cat1_2022 |> 
+  mutate_at(c('application_number', 'form_471_line_item_number'), as.numeric) |> 
+  left_join((purpose %>% 
+               select(application_number, form_471_line_item_number, form_471_purpose_name, form_version, connection_directly_school, connection_supports_service) %>% 
+               filter(form_version == "Current") %>% 
+               mutate(application_number = as.numeric(application_number),
+                      form_471_line_item_number = as.numeric(form_471_line_item_number))
+             ), 
+            by=c("application_number", "form_471_line_item_number")) 
+```
+
+```{r}
+# Count the distinct imls entities in the dataset we will create below
+cat1_2022 %>% 
+  mutate(imls_iden = paste(FSCSKEY, FSCS_SEQ, sep = "_")) |> 
+  filter(!is.na(FSCSKEY),
+         (grepl('^Internet access', form_471_purpose_name) | grepl('^Data connection(s)', form_471_purpose_name)),
+         form_471_function_name != "Miscellaneous",
+         form_471_product_name != "Data plan for portable device",
+         !is.na(form_471_download_speed_unit_name),
+         ros_entity_type != "non-instructional facility (nif)",
+         C_OUT_TY %in% c('BR', 'CE')
+         ) |> 
+  summarise(n_distinct(imls_iden, na.rm = T), n_distinct(ros_entity_number, na.rm = TRUE))
+```
+
+```{r}
+# Create a dataset that only includes the two purposes that begin with the words Internet access 
+# and the one that begins with Data connection(s)
+# Use only PLS libs that are branches or centrals
+
+# One dataset for those entites with a single application
+ia_purposes_singleapp <- cat1_2022 %>% 
+  mutate(imls_iden = paste(FSCSKEY, FSCS_SEQ, sep = "_")) |> 
+  filter(!is.na(FSCSKEY),
+         (grepl('^Internet access', form_471_purpose_name) | grepl('^Data connection(s)', form_471_purpose_name)),
+         form_471_function_name != "Miscellaneous",
+         form_471_product_name != "Data plan for portable device",
+         !is.na(form_471_download_speed_unit_name),
+         ros_entity_type != "non-instructional facility (nif)",
+         C_OUT_TY %in% c('BR', 'CE')
+         ) |> 
+  add_count(imls_iden, name = "how_many_rows_per_lib") |> 
+  filter(how_many_rows_per_lib == 1)
+```
+
+```{r}
+# One dataset with entities that have multiple apps - we will filter this down to one app
+ia_purposes_multiapp <- cat1_2022 %>% 
+  mutate(imls_iden = paste(FSCSKEY, FSCS_SEQ, sep = "_")) |> 
+  filter(!is.na(FSCSKEY),
+         (grepl('^Internet access', form_471_purpose_name) | grepl('^Data connection(s)', form_471_purpose_name)),
+         form_471_function_name != "Miscellaneous",
+         form_471_product_name != "Data plan for portable device",
+         !is.na(form_471_download_speed_unit_name),
+         ros_entity_type != "non-instructional facility (nif)",
+         C_OUT_TY %in% c('BR', 'CE')
+         ) |> 
+  add_count(imls_iden, name = "how_many_rows_per_lib") |> 
+  filter(how_many_rows_per_lib > 1)
+
+done1 <- ia_purposes_multiapp |> 
+  group_by(imls_iden) |> 
+  slice_max(download_speed_mbps, with_ties = T) |> 
+  ungroup() |> 
+  add_count(imls_iden, name = "how_many_rows_per_lib_2") |> 
+  filter(how_many_rows_per_lib_2 == 1)
+
+done2 <- ia_purposes_multiapp |> 
+  group_by(imls_iden) |> 
+  slice_max(download_speed_mbps, with_ties = T) |> 
+  ungroup() |> 
+  add_count(imls_iden, name = "how_many_rows_per_lib_2") |>  
+  filter(how_many_rows_per_lib_2 > 1) |> 
+  group_by(imls_iden) |> 
+  slice_max(upload_speed_mbps, with_ties = T) |> 
+  ungroup() |>
+  add_count(imls_iden, name = "how_many_rows_per_lib_3") |> 
+  filter(how_many_rows_per_lib_3 == 1)
+
+done3 <- ia_purposes_multiapp |> 
+  group_by(imls_iden) |> 
+  slice_max(download_speed_mbps, with_ties = T) |> 
+  ungroup() |> 
+  add_count(imls_iden, name = "how_many_rows_per_lib_2") |>  
+  filter(how_many_rows_per_lib_2 > 1) |> 
+  group_by(imls_iden) |> 
+  slice_max(upload_speed_mbps, with_ties = T) |> 
+  ungroup() |>
+  add_count(imls_iden, name = "how_many_rows_per_lib_3") |> 
+  filter(how_many_rows_per_lib_3 > 1) |> 
+  mutate(function_rank = case_when(
+    form_471_function_name == "Fiber" ~ 1,
+    form_471_function_name == "Copper" & form_471_product_name == "Cable Modem" ~ 2,
+    .default = 9
+  )) |> 
+  group_by(imls_iden) |> 
+  slice_min(function_rank, with_ties = T) |> 
+  ungroup() |>
+  add_count(imls_iden, name = "how_many_rows_per_lib_4") |> 
+  filter(how_many_rows_per_lib_4 == 1)
+
+done4 <- ia_purposes_multiapp |> 
+  group_by(imls_iden) |> 
+  slice_max(download_speed_mbps, with_ties = T) |> 
+  ungroup() |> 
+  add_count(imls_iden, name = "how_many_rows_per_lib_2") |>  
+  filter(how_many_rows_per_lib_2 > 1) |> 
+  group_by(imls_iden) |> 
+  slice_max(upload_speed_mbps, with_ties = T) |> 
+  ungroup() |>
+  add_count(imls_iden, name = "how_many_rows_per_lib_3") |> 
+  filter(how_many_rows_per_lib_3 > 1) |> 
+  mutate(function_rank = case_when(
+    form_471_function_name == "Fiber" ~ 1,
+    form_471_function_name == "Copper" & form_471_product_name == "Cable Modem" ~ 2,
+    .default = 9
+  )) |> 
+  group_by(imls_iden) |> 
+  slice_min(function_rank, with_ties = T) |> 
+  ungroup() |>
+  add_count(imls_iden, name = "how_many_rows_per_lib_4") |> 
+  filter(how_many_rows_per_lib_4 > 1) |> 
+  group_by(imls_iden) |> 
+  slice_max(total_monthly_cost, with_ties = T) |> 
+  ungroup() |>
+  add_count(imls_iden, name = "how_many_rows_per_lib_5") |> 
+  filter(how_many_rows_per_lib_5 == 1)
+
+done5 <- ia_purposes_multiapp |> 
+  group_by(imls_iden) |> 
+  slice_max(download_speed_mbps, with_ties = T) |> 
+  ungroup() |> 
+  add_count(imls_iden, name = "how_many_rows_per_lib_2") |>  
+  filter(how_many_rows_per_lib_2 > 1) |> 
+  group_by(imls_iden) |> 
+  slice_max(upload_speed_mbps, with_ties = T) |> 
+  ungroup() |>
+  add_count(imls_iden, name = "how_many_rows_per_lib_3") |> 
+  filter(how_many_rows_per_lib_3 > 1) |> 
+  mutate(function_rank = case_when(
+    form_471_function_name == "Fiber" ~ 1,
+    form_471_function_name == "Copper" & form_471_product_name == "Cable Modem" ~ 2,
+    .default = 9
+  )) |> 
+  group_by(imls_iden) |> 
+  slice_min(function_rank, with_ties = T) |> 
+  ungroup() |>
+  add_count(imls_iden, name = "how_many_rows_per_lib_4") |> 
+  filter(how_many_rows_per_lib_4 > 1) |> 
+  group_by(imls_iden) |> 
+  slice_max(total_monthly_cost, with_ties = T) |> 
+  ungroup() |>
+  add_count(imls_iden, name = "how_many_rows_per_lib_5") |> 
+  filter(how_many_rows_per_lib_5 > 1) |> 
+  group_by(imls_iden) |> 
+  slice_head(n=1) 
+```
+
+```{r}
+# bind all the single entity dataframes
+ia_purposes <- rbind(ia_purposes_singleapp,
+      done1 |> 
+        select(-how_many_rows_per_lib_2),
+      done2 |> 
+        select(-how_many_rows_per_lib_2, -how_many_rows_per_lib_3),
+      done3 |> 
+        select(-how_many_rows_per_lib_2, -how_many_rows_per_lib_3, -how_many_rows_per_lib_4, -function_rank),
+      done4 |> 
+        select(-how_many_rows_per_lib_2, -how_many_rows_per_lib_3, -how_many_rows_per_lib_4, -function_rank, -how_many_rows_per_lib_5),
+      done5 |> 
+        select(-how_many_rows_per_lib_2, -how_many_rows_per_lib_3, -how_many_rows_per_lib_4, -function_rank, -how_many_rows_per_lib_5)
+)
+```
+
+```{r}
+# Count distinct - we want same number of imls_iden as before the filtering
+ia_purposes |> 
+  summarise(n_distinct(imls_iden, na.rm = T), n_distinct(ros_entity_number, na.rm = TRUE))
+```
+
+# Chris J's BEAD Classification:
+
+Class 1 - these are libraries that currently have a 1Gbps symmetrical connection regardless of the technology utilized. If they are reporting 1Gbps in download/upload speeds fields then they fall into this class.
+
+Class 2 - these are libraries that do not currently have a 1Gbps symmetrical connection, but have a current connection type that would allow for an upgrade to a 1Gbps symmetrical connection. These libraries report less than 1Gbps in download OR upload speeds and have the following types of function + product combinations:
+	
+Function Name (form_471_function_name) | Product Name (form_471_product_name)
+Fiber | *(Any)
+Copper | Cable Modem
+Copper | Switched Multimegabit Data System
+Other | Other
+Other  | Broadband Over Power Lines
+Other | Radio Loop
+Wireless | Microwave
+
+Class 3 - these are libraries that do not currently have a 1Gbps symmetrical connection, AND do not have a current connection type that would allow for an upgrade to a 1Gbps symmetrical connection. These libraries report less than 1Gbps in download OR upload speeds and have any of the types of function + product combinations not included in Class 2.
+
+```{r}
+# Create a BEAD Class based on CJs rules
+ia_purposes <- ia_purposes |> 
+  mutate(bead_class = case_when(
+    symmetrical_gig == TRUE ~ "class1",
+    symmetrical_gig == FALSE & form_471_function_name == "Fiber" ~ "class2",
+    symmetrical_gig == FALSE & form_471_function_name == "Copper" & form_471_product_name == "Cable Modem" ~ "class2",
+    symmetrical_gig == FALSE & form_471_function_name == "Copper" & form_471_product_name == "Switched Multimegabit Data System" ~ "class2",
+    symmetrical_gig == FALSE & form_471_function_name == "Other" & form_471_product_name == "Other" ~ "class2",
+    symmetrical_gig == FALSE & form_471_function_name == "Other" & form_471_product_name == "Broadband Over Power Lines" ~ "class2",
+    symmetrical_gig == FALSE & form_471_function_name == "Other" & form_471_product_name == "Radio Loop" ~ "class2",
+    symmetrical_gig == FALSE & form_471_function_name == "Wireless" & form_471_product_name == "Microwave" ~ "class2",
+    .default = "class3"
+  ))
+```
+
+
+```{r}
+# Save the ia_purposes dataset file to Github for reference
+write.csv(ia_purposes, "~/Documents/GitHub/E-Rate/Data/2022_Internet_Access_with_Purpose_2021_IMLS_Entities_Single_Row.csv")
+```
+
+```{r}
+# Check to see how the purpose filtering affects a few other columns
+print(unique(ia_purposes$form_471_function_name))
+print(unique(ia_purposes$form_471_product_name))
+print(unique(ia_purposes$form_471_download_speed_unit_name))
+```
+
+```{r}
+# How many libs meet the fcc benchmark based on population
+ia_purposes |> 
+  select(ros_entity_number, imls_iden, pop_category, fcc_speed_benchmark) |> 
+  group_by(pop_category, fcc_speed_benchmark) |> 
+  summarise(n_distinct(imls_iden))
+```
+
+```{r}
+# How many libs meet the fcc benchmark based on locale
+ia_purposes |> 
+  select(ros_entity_number, imls_iden, LOCALE_TOP_LEVEL_DESCR, fcc_speed_benchmark) |> 
+  group_by(LOCALE_TOP_LEVEL_DESCR, fcc_speed_benchmark) |> 
+  summarise(n_distinct(imls_iden))
+```
+
+```{r}
+# How many libs meet the fcc benchmark based on function
+ia_purposes |> 
+  select(ros_entity_number, imls_iden, form_471_function_name, fcc_speed_benchmark) |> 
+  group_by(form_471_function_name, fcc_speed_benchmark) |> 
+  summarise(n_distinct(imls_iden))
+```
+
+```{r}
+# How many libs are class 3 for BEAD
+ia_purposes |> 
+  select(imls_iden, bead_class) |> 
+  group_by(bead_class) |> 
+  summarise(n_distinct(imls_iden))
+```
+
+```{r}
+# Save the class3 libraries as a file to Github for reference
+ia_purposes |> 
+  filter(bead_class == "class3") |> 
+  select(ros_entity_number, FSCSKEY, FSCS_SEQ, ros_entity_name, ros_physical_city, ros_physical_state, application_number, form_471_line_item_number, upload_speed_mbps, download_speed_mbps, form_471_function_name, form_471_product_name) |>
+  write.csv("~/Documents/GitHub/E-Rate/Data/2022_Libraries_without_1G_symmetrical_capability.csv")
+```
+
+```{r}
+# Write out a csv for Chris
+# Include lat/lon, FCC, BEAD, connection types
+ia_purposes |> 
+  select(ros_entity_number, 
+         FSCSKEY, 
+         FSCS_SEQ, 
+         ros_entity_name, 
+         ros_physical_address, 
+         ros_physical_city, 
+         ros_physical_state, 
+         ros_physical_zipcode,
+         ros_latitude,
+         ros_longitude,
+         organization_entity_type_name,
+         application_number,
+         funding_request_number,
+         form_471_line_item_number,
+         spin_name,
+         form_471_service_type_name,
+         form_471_function_name,
+         form_471_product_name,
+         form_471_frn_fiber_type_name,
+         form_471_frn_fiber_sub_type_name,
+         form_471_purpose_name,
+         download_speed_mbps,
+         upload_speed_mbps,
+         POPU_LSA,
+         LOCALE,
+         fcc_speed_benchmark,
+         pop_category,
+         symmetrical_gig,
+         bead_class) |> 
+  write.csv("~/Documents/GitHub/E-Rate/Data/2022_Internet_Access_with_Purpose_2021_IMLS_Entities_Single_Row_Minified.csv")
+```
+
+
+# Fourth purpose
+## Data Connection between two or more sites entirely within the applicant’s network
+
+```{r}
+# Create a dataset that only includes the purpose called 
+# "Data Connection between two or more sites entirely within the applicant’s network"
+# Use only PLS libs
+
+# One dataset for those entites with a single application
+ia_4purpose_singleapp <- cat1_2022 %>% 
+  mutate(imls_iden = paste(FSCSKEY, FSCS_SEQ, sep = "_")) |> 
+  filter(!is.na(FSCSKEY),
+         grepl('^Data Connection between two or more', form_471_purpose_name),
+         form_471_function_name != "Miscellaneous",
+         form_471_product_name != "Data plan for portable device",
+         !is.na(form_471_download_speed_unit_name),
+         ros_entity_type != "non-instructional facility (nif)",
+         C_OUT_TY %in% c('BR', 'CE')
+         ) |> 
+  add_count(imls_iden, name = "how_many_rows_per_lib") |> 
+  filter(how_many_rows_per_lib == 1)
+```
+
+```{r}
+# One dataset with entities that have multiple apps - we will filter this down to one app
+ia_4purpose_multiapp <- cat1_2022 %>% 
+  mutate(imls_iden = paste(FSCSKEY, FSCS_SEQ, sep = "_")) |> 
+  filter(!is.na(FSCSKEY),
+         grepl('^Data Connection between two or more', form_471_purpose_name),
+         form_471_function_name != "Miscellaneous",
+         form_471_product_name != "Data plan for portable device",
+         !is.na(form_471_download_speed_unit_name),
+         ros_entity_type != "non-instructional facility (nif)",
+         C_OUT_TY %in% c('BR', 'CE')
+         ) |> 
+  add_count(imls_iden, name = "how_many_rows_per_lib") |> 
+  filter(how_many_rows_per_lib > 1)
+
+complete1 <- ia_4purpose_multiapp |> 
+  group_by(imls_iden) |> 
+  slice_max(download_speed_mbps, with_ties = T) |> 
+  ungroup() |> 
+  add_count(imls_iden, name = "how_many_rows_per_lib_2") |> 
+  filter(how_many_rows_per_lib_2 == 1)
+
+complete2 <- ia_4purpose_multiapp |> 
+  group_by(imls_iden) |> 
+  slice_max(download_speed_mbps, with_ties = T) |> 
+  ungroup() |> 
+  add_count(imls_iden, name = "how_many_rows_per_lib_2") |>  
+  filter(how_many_rows_per_lib_2 > 1) |> 
+  group_by(imls_iden) |> 
+  slice_max(upload_speed_mbps, with_ties = T) |> 
+  ungroup() |>
+  add_count(imls_iden, name = "how_many_rows_per_lib_3") |> 
+  filter(how_many_rows_per_lib_3 == 1)
+
+complete3 <- ia_4purpose_multiapp |> 
+  group_by(imls_iden) |> 
+  slice_max(download_speed_mbps, with_ties = T) |> 
+  ungroup() |> 
+  add_count(imls_iden, name = "how_many_rows_per_lib_2") |>  
+  filter(how_many_rows_per_lib_2 > 1) |> 
+  group_by(imls_iden) |> 
+  slice_max(upload_speed_mbps, with_ties = T) |> 
+  ungroup() |>
+  add_count(imls_iden, name = "how_many_rows_per_lib_3") |> 
+  filter(how_many_rows_per_lib_3 > 1) |> 
+  mutate(function_rank = case_when(
+    form_471_function_name == "Fiber" ~ 1,
+    form_471_function_name == "Copper" & form_471_product_name == "Cable Modem" ~ 2,
+    .default = 9
+  )) |> 
+  group_by(imls_iden) |> 
+  slice_min(function_rank, with_ties = T) |> 
+  ungroup() |>
+  add_count(imls_iden, name = "how_many_rows_per_lib_4") |> 
+  filter(how_many_rows_per_lib_4 == 1)
+
+complete4 <- ia_4purpose_multiapp |> 
+  group_by(imls_iden) |> 
+  slice_max(download_speed_mbps, with_ties = T) |> 
+  ungroup() |> 
+  add_count(imls_iden, name = "how_many_rows_per_lib_2") |>  
+  filter(how_many_rows_per_lib_2 > 1) |> 
+  group_by(imls_iden) |> 
+  slice_max(upload_speed_mbps, with_ties = T) |> 
+  ungroup() |>
+  add_count(imls_iden, name = "how_many_rows_per_lib_3") |> 
+  filter(how_many_rows_per_lib_3 > 1) |> 
+  mutate(function_rank = case_when(
+    form_471_function_name == "Fiber" ~ 1,
+    form_471_function_name == "Copper" & form_471_product_name == "Cable Modem" ~ 2,
+    .default = 9
+  )) |> 
+  group_by(imls_iden) |> 
+  slice_min(function_rank, with_ties = T) |> 
+  ungroup() |>
+  add_count(imls_iden, name = "how_many_rows_per_lib_4") |> 
+  filter(how_many_rows_per_lib_4 > 1) |> 
+  group_by(imls_iden) |> 
+  slice_max(total_monthly_cost, with_ties = T) |> 
+  ungroup() |>
+  add_count(imls_iden, name = "how_many_rows_per_lib_5") |> 
+  filter(how_many_rows_per_lib_5 == 1)
+
+complete5 <- ia_4purpose_multiapp |> 
+  group_by(imls_iden) |> 
+  slice_max(download_speed_mbps, with_ties = T) |> 
+  ungroup() |> 
+  add_count(imls_iden, name = "how_many_rows_per_lib_2") |>  
+  filter(how_many_rows_per_lib_2 > 1) |> 
+  group_by(imls_iden) |> 
+  slice_max(upload_speed_mbps, with_ties = T) |> 
+  ungroup() |>
+  add_count(imls_iden, name = "how_many_rows_per_lib_3") |> 
+  filter(how_many_rows_per_lib_3 > 1) |> 
+  mutate(function_rank = case_when(
+    form_471_function_name == "Fiber" ~ 1,
+    form_471_function_name == "Copper" & form_471_product_name == "Cable Modem" ~ 2,
+    .default = 9
+  )) |> 
+  group_by(imls_iden) |> 
+  slice_min(function_rank, with_ties = T) |> 
+  ungroup() |>
+  add_count(imls_iden, name = "how_many_rows_per_lib_4") |> 
+  filter(how_many_rows_per_lib_4 > 1) |> 
+  group_by(imls_iden) |> 
+  slice_max(total_monthly_cost, with_ties = T) |> 
+  ungroup() |>
+  add_count(imls_iden, name = "how_many_rows_per_lib_5") |> 
+  filter(how_many_rows_per_lib_5 > 1) |> 
+  group_by(imls_iden) |> 
+  slice_head(n=1) 
+```
+
+```{r}
+# bind all the single entity dataframes
+ia_4purpose <- rbind(ia_4purpose_singleapp,
+      complete1 |> 
+        select(-how_many_rows_per_lib_2),
+      complete2 |> 
+        select(-how_many_rows_per_lib_2, -how_many_rows_per_lib_3),
+      complete3 |> 
+        select(-how_many_rows_per_lib_2, -how_many_rows_per_lib_3, -how_many_rows_per_lib_4, -function_rank),
+      complete4 |> 
+        select(-how_many_rows_per_lib_2, -how_many_rows_per_lib_3, -how_many_rows_per_lib_4, -function_rank, -how_many_rows_per_lib_5),
+      complete5 |> 
+        select(-how_many_rows_per_lib_2, -how_many_rows_per_lib_3, -how_many_rows_per_lib_4, -function_rank, -how_many_rows_per_lib_5)
+)
+```
+
+```{r}
+# Create a list of RENs in the ia_purposes dataset (for filtering)
+ia_purposes_list <- ia_purposes |> 
+  select(ros_entity_number) |> 
+  pull()
+```
+
+```{r}
+# We don't want any entities from the ia_purposes_list in the ia_4purpose dataset
+ia_4purpose <- ia_4purpose |> 
+  filter(!ros_entity_number %in% ia_purposes_list)
+```
+
+```{r}
+# Count distinct - we want same number of imls_iden as before the filtering
+ia_4purpose |> 
+  summarise(n_distinct(imls_iden, na.rm = T), n_distinct(ros_entity_number, na.rm = TRUE))
+```
+
+```{r}
+rm(complete1, complete2, complete3, complete4, complete5, done1, done2, done3, done4, done5)
+```
+
+# Chris J's BEAD Classification:
+
+Class 1 - these are libraries that currently have a 1Gbps symmetrical connection regardless of the technology utilized. If they are reporting 1Gbps in download/upload speeds fields then they fall into this class.
+
+Class 2 - these are libraries that do not currently have a 1Gbps symmetrical connection, but have a current connection type that would allow for an upgrade to a 1Gbps symmetrical connection. These libraries report less than 1Gbps in download OR upload speeds and have the following types of function + product combinations:
+	
+Function Name (form_471_function_name) | Product Name (form_471_product_name)
+Fiber | *(Any)
+Copper | Cable Modem
+Copper | Switched Multimegabit Data System
+Other | Other
+Other  | Broadband Over Power Lines
+Other | Radio Loop
+Wireless | Microwave
+
+Class 3 - these are libraries that do not currently have a 1Gbps symmetrical connection, AND do not have a current connection type that would allow for an upgrade to a 1Gbps symmetrical connection. These libraries report less than 1Gbps in download OR upload speeds and have any of the types of function + product combinations not included in Class 2.
+
+```{r}
+# Create a BEAD Class based on CJs rules
+ia_4purpose <- ia_4purpose |> 
+  mutate(bead_class = case_when(
+    symmetrical_gig == TRUE ~ "class1",
+    symmetrical_gig == FALSE & form_471_function_name == "Fiber" ~ "class2",
+    symmetrical_gig == FALSE & form_471_function_name == "Copper" & form_471_product_name == "Cable Modem" ~ "class2",
+    symmetrical_gig == FALSE & form_471_function_name == "Copper" & form_471_product_name == "Switched Multimegabit Data System" ~ "class2",
+    symmetrical_gig == FALSE & form_471_function_name == "Other" & form_471_product_name == "Other" ~ "class2",
+    symmetrical_gig == FALSE & form_471_function_name == "Other" & form_471_product_name == "Broadband Over Power Lines" ~ "class2",
+    symmetrical_gig == FALSE & form_471_function_name == "Other" & form_471_product_name == "Radio Loop" ~ "class2",
+    symmetrical_gig == FALSE & form_471_function_name == "Wireless" & form_471_product_name == "Microwave" ~ "class2",
+    .default = "class3"
+  ))
+```
+
+```{r}
+# Check to see how the purpose filtering affects a few other columns
+print(unique(ia_4purpose$form_471_function_name))
+print(unique(ia_4purpose$form_471_product_name))
+print(unique(ia_4purpose$form_471_download_speed_unit_name))
+```
+
+```{r}
+# How many libs meet the fcc benchmark based on population
+ia_4purpose |> 
+  select(ros_entity_number, imls_iden, pop_category, fcc_speed_benchmark) |> 
+  group_by(pop_category, fcc_speed_benchmark) |> 
+  summarise(n_distinct(imls_iden))
+```
+
+```{r}
+# How many libs meet the fcc benchmark based on locale
+ia_4purpose |> 
+  select(ros_entity_number, imls_iden, LOCALE_TOP_LEVEL_DESCR, fcc_speed_benchmark) |> 
+  group_by(LOCALE_TOP_LEVEL_DESCR, fcc_speed_benchmark) |> 
+  summarise(n_distinct(imls_iden))
+```
+
+```{r}
+# How many libs meet the fcc benchmark based on function
+ia_4purpose |> 
+  select(ros_entity_number, imls_iden, form_471_function_name, fcc_speed_benchmark) |> 
+  group_by(form_471_function_name, fcc_speed_benchmark) |> 
+  summarise(n_distinct(imls_iden))
+```
+
+```{r}
+# How many libs are class 3 for BEAD
+ia_4purpose |> 
+  select(imls_iden, bead_class) |> 
+  group_by(bead_class) |> 
+  summarise(n_distinct(imls_iden))
+```
+
+```{r}
+# Count how many entities have 4th purpose only by state
+ia_4purpose |> 
+  #group_by(ros_physical_state) |> 
+  count(ros_physical_state)
+```
+

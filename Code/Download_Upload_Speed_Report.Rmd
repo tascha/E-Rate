@@ -77,8 +77,8 @@ filtered_erate <- filtered_erate %>%
     form_471_download_speed_unit_name == "Gbps" ~ download_speed * 1000
   )) %>%
   mutate(upload_speed_mbps = case_when(
-    form_471_upload_speed_unit_name == "Mbps" ~ download_speed,
-    form_471_upload_speed_unit_name == "Gbps" ~ download_speed * 1000
+    form_471_upload_speed_unit_name == "Mbps" ~ upload_speed,
+    form_471_upload_speed_unit_name == "Gbps" ~ upload_speed * 1000
   )) 
 ```
 
