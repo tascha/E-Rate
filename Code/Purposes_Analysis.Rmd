@@ -1,5 +1,5 @@
 ---
-title: "Internet Affordability Research from E-rate Data"
+title: "Internet Affordability Research from E-rate Data by Purpose"
 author: "Bree Norlander"
 date: "`r format(Sys.time(), '%B %d, %Y')`"
 output: html_notebook

@@ -1,0 +1,53 @@
+---
+title: "IMLS PLS Outlet Mashup"
+author: "Bree Norlander"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+#output: html_notebook
+---
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(ggplot2)
+library(aws.s3)
+library(glue)
+```
+
+```{r}
+# https://stackoverflow.com/a/29419402
+years <- list("2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021")
+datalist = list()
+for (i in 1:length(years)) {
+  data <- s3read_using(FUN = read.csv, object = glue("{years[i]}_IMLS_PLS_OUTLET.csv"), bucket = "erate-data/data/IMLS_PLS")
+  
+  data <- data |> 
+    as.data.frame() |> 
+    mutate(PLS_YEAR = years[i]) |> 
+    select(FSCSKEY, FSCS_SEQ, LIBNAME, ADDRESS, CITY, ZIP, STABR, LONGITUD, LATITUDE, LOCALE, C_OUT_TY, PLS_YEAR)
+    
+  datalist[[i]] <- data
+}
+outlets <- do.call(rbind, datalist)
+#outlets <- as.data.frame(outlets)
+```
+
+```{r}
+outlets <- outlets |> 
+  unnest(PLS_YEAR) |> # This was a list for some reason
+  group_by(FSCSKEY, FSCS_SEQ) |> 
+  slice_max(PLS_YEAR) |> 
+  rename(MOST_RECENT_PLS_YEAR = PLS_YEAR)
+```
+
+```{r}
+# Write out dataset to S3
+s3write_using(
+  outlets,
+  FUN = write.csv,
+  row.names = F,
+  bucket = "erate-data/data/IMLS_PLS",
+  object = "2014-2021_IMLS_Outlets_Unique.csv"
+)
+```
+
