@@ -1,6 +1,12 @@
 ---
 title: "Broadband Prices Report"
-format: pdf
+format: 
+  pdf:
+    df-print: kable
+  html: 
+    code-fold: false
+execute:
+  echo: false
 editor: visual
 ---
 
@@ -9,6 +15,8 @@ editor: visual
 ```{r}
 #| echo: false
 #| warning: false
+
+
 library(dplyr)
 library(tidyr)
 library(stringr)
@@ -19,12 +27,10 @@ library(glue)
 library(kableExtra)
 ```
 
-You can add options to executable code like this
-
 ```{r}
 #| echo: false
 #| warning: false
-
+#| cache: true
 # Read in cat1 erate data
 # https://stackoverflow.com/a/29419402
 years <- list("2016", "2017", "2018", "2019", "2020", "2021", "2022")
@@ -78,7 +84,7 @@ imls_outlets <-
 ```{r}
 #| echo: false
 #| warning: false
-
+#| cache: true
 # We only want imls outlets that existed from 2016 on
 # Also add in descriptions of the Locales
 imls_outlets <- imls_outlets |> 
@@ -109,7 +115,7 @@ imls_outlets <- imls_outlets |>
 ```{r}
 #| echo: false
 #| warning: false
-
+#| cache: true
 # Add ros_entity_numbers to imls_outlets
 # This will increase the rows because sometimes multiple ros_entity_numbers
 # match a single imls outlet
@@ -122,7 +128,7 @@ imls_outlets <- imls_outlets |>
 ```{r}
 #| echo: false
 #| warning: false
-
+#| cache: true
 # Create the dataset for analysis
 # Add in IMLS designators and normalize the upload/download speeds
 # Add in a calculation of the download_cost_per_mbps_per_month 
@@ -165,8 +171,7 @@ cat1_wrangled <- cat1 |>
 ```
 
 ```{r}
-#| label: tbl-kable
-#| tbl-cap: Simple tables with `kable()`
+#| tbl-cap: Summary Statistics by Year for Download Cost Per Mbps Per Month
 
 cat1_wrangled |> 
   group_by(funding_year) |> 
@@ -177,20 +182,18 @@ cat1_wrangled |>
             wtd_mean = weighted.mean(x=download_cost_per_mbps_per_month, w=weight_for_mean, na.rm=TRUE),
             sd = sd(download_cost_per_mbps_per_month, na.rm = T),
             n = n()) |> 
-    kable(
-      caption = ("Download Cost Per Mbps Per Month"),
+    kbl(
       booktabs = T,
       longtable = TRUE,
       digits = 2
-    ) %>%
-    # https://stackoverflow.com/a/64124545/5593458 about font size and longtable
-    kable_styling(latex_options = c("repeat_header", "HOLD_position", "striped"), font_size = 7) %>%
-    print()
+    ) 
 ```
 
 ```{r}
 #| echo: false
 #| warning: false
+#| tbl-cap: Summary Statistics by Year and Purpose for Download Cost Per Mbps Per Month
+
 
 
 cat1_wrangled |> 
@@ -202,14 +205,11 @@ cat1_wrangled |>
             wtd_mean = weighted.mean(x=download_cost_per_mbps_per_month, w=weight_for_mean, na.rm=TRUE),
             sd = sd(download_cost_per_mbps_per_month, na.rm = T),
             n = n()) |> 
-  kable(
-      caption = ("Download Cost Per Mbps Per Month"),
+  kbl(
       booktabs = T,
-      longtable = TRUE,
       digits = 2
     ) %>%
     # https://stackoverflow.com/a/64124545/5593458 about font size and longtable
-    kable_styling(latex_options = c("repeat_header", "HOLD_position", "striped"), font_size = 7) %>%
-    landscape() %>%
-    print()
+    kable_styling(latex_options = c("hold_position", "repeat_header"), font_size = 6, full_width = TRUE) %>%
+    landscape()
 ```
