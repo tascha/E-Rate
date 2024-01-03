@@ -1,0 +1,195 @@
+---
+title: "Creating Chris's Dream Dataset"
+output: html_notebook
+---
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(ggplot2)
+library(aws.s3)
+library(janitor)
+library(glue)
+library(kableExtra)
+```
+
+```{r}
+commitments <- s3read_using(FUN = read.csv,
+                       na.strings = c("", " ", "N/A", "n/a"),
+                       object = "Libraries_Funded_Committed_AVI8-SVP9.csv",
+                       bucket = "erate-data/data/AVI8-SVP9_Commitments")
+
+```
+
+```{r}
+purpose2016 <- s3read_using(FUN = read.csv,
+                       na.strings = c("", " ", "N/A", "n/a"),
+                       object = "2016_Full_Purpose.csv",
+                       bucket = "erate-data/data/HBJ5-2BPJ_Purpose")
+
+purpose2016 <- purpose2016 |> 
+  select(-connection_used_by)
+
+purpose2017 <- s3read_using(FUN = read.csv,
+                       na.strings = c("", " ", "N/A", "n/a"),
+                       object = "2017_Full_Purpose.csv",
+                       bucket = "erate-data/data/HBJ5-2BPJ_Purpose")
+
+purpose2017 <- purpose2017 |> 
+  select(-connection_used_by)
+
+purpose2018 <- s3read_using(FUN = read.csv,
+                       na.strings = c("", " ", "N/A", "n/a"),
+                       object = "2018_Full_Purpose.csv",
+                       bucket = "erate-data/data/HBJ5-2BPJ_Purpose")
+
+purpose2019 <- s3read_using(FUN = read.csv,
+                       na.strings = c("", " ", "N/A", "n/a"),
+                       object = "2019_Full_Purpose.csv",
+                       bucket = "erate-data/data/HBJ5-2BPJ_Purpose")
+
+purpose2020 <- s3read_using(FUN = read.csv,
+                       na.strings = c("", " ", "N/A", "n/a"),
+                       object = "2020_Full_Purpose.csv",
+                       bucket = "erate-data/data/HBJ5-2BPJ_Purpose")
+
+purpose2021 <- s3read_using(FUN = read.csv,
+                       na.strings = c("", " ", "N/A", "n/a"),
+                       object = "2021_Full_Purpose.csv",
+                       bucket = "erate-data/data/HBJ5-2BPJ_Purpose")
+
+purpose2022 <- s3read_using(FUN = read.csv,
+                       na.strings = c("", " ", "N/A", "n/a"),
+                       object = "2022_Full_Purpose.csv",
+                       bucket = "erate-data/data/HBJ5-2BPJ_Purpose")
+
+purpose2023 <- s3read_using(FUN = read.csv,
+                       na.strings = c("", " ", "N/A", "n/a"),
+                       object = "2023_Full_Purpose.csv",
+                       bucket = "erate-data/data/HBJ5-2BPJ_Purpose")
+
+purpose <- rbind(purpose2016, purpose2017, purpose2018, purpose2019, purpose2020, purpose2021, purpose2022, purpose2023)
+
+rm(purpose2016, purpose2017, purpose2018, purpose2019, purpose2020, purpose2021, purpose2022, purpose2023)
+```
+
+```{r}
+imls <- s3read_using(FUN = read.csv,
+                     na.strings = c("", " ", "N/A", "n/a"),
+                     bucket = "erate-data/data/IMLS_PLS",
+                     object = "2016-2021_IMLS_Outlets_Unique.csv")
+```
+
+```{r}
+# Read in IMLS USAC matches
+matches <-
+  s3read_using(
+    FUN = read.csv,
+    na.strings = c("", " ", "N/A", "n/a"),
+    object = "Algorithmic_Matches.csv",
+    bucket = "erate-data/data/USAC_IMLS_Match"
+  )
+```
+
+```{r}
+# Add in IMLS designators and normalize the upload/download speeds
+commitments <- commitments |>
+  left_join(matches |> select(FSCSKEY, FSCS_SEQ, ros_entity_number),
+            by = join_by(ros_entity_number)) |>
+  mutate(
+    download_speed_mbps = case_when(
+      form_471_download_speed_unit_name == "Mbps" ~ as.numeric(download_speed),
+      form_471_download_speed_unit_name == "Gbps" ~ as.numeric(download_speed) * 1000
+    )
+  ) |> 
+  mutate(
+    upload_speed_mbps = case_when(
+      form_471_upload_speed_unit_name == "Mbps" ~ as.numeric(upload_speed),
+      form_471_upload_speed_unit_name == "Gbps" ~ as.numeric(upload_speed) * 1000
+    )
+  ) 
+```
+
+```{r}
+# Add in imls data
+commitments <- commitments |> 
+  left_join(imls, by = c("FSCSKEY", "FSCS_SEQ"))
+```
+
+```{r}
+# add in purposes dataset
+commitments <- commitments |>
+  left_join((
+    purpose %>%
+      filter(form_version == "Current") %>%
+      mutate(
+        application_number = as.numeric(application_number),
+        form_471_line_item_number = as.numeric(form_471_line_item_number)
+      )
+  ),
+  by = c("funding_year", "application_number", "form_471_line_item_number")
+  ) 
+```
+
+```{r}
+# Remove entities that aren't in PLS
+commitments <- commitments |> 
+  filter(!is.na(FSCSKEY)) |> 
+  # add column
+  mutate(`SOURCE OF DATA` = 'https://opendata.usac.org/E-Rate/E-Rate-Recipient-Details-And-Commitments/avi8-svp9/about_data, https://opendata.usac.org/E-Rate/E-Rate-Request-for-Discount-on-Services-FRN-Line-I/hbj5-2bpj/about_data, https://www.imls.gov/research-evaluation/data-collection/public-libraries-survey')
+```
+
+
+```{r}
+commitments_clean <- commitments |>
+  select(
+    `FSCS KEY` = FSCSKEY,
+    `FSCS SEQUENCE` = FSCS_SEQ,
+    `LIBRARY OUTLET NAME` = LIBNAME,
+    `LIBRARY STREET ADDRESS` = ADDRESS,
+    `LIBRARY OUTLET CITY` = CITY,
+    `STATE` = STABR,
+    `LIBRARY ZIP CODE` = ZIP,
+    `LIBRARY ZIP CODE EXTENSION` = ZIP4,
+    `LIBRARY COUNTY` = CNTY,
+    `LATITUDE` = LATITUDE,
+    `LONGITUDE` = LONGITUD,
+    `LOCALE CODE` = LOCALE,
+    `LIBRARY OUTLET TYPE` = C_OUT_TY,
+    `MEETS FSCS PUBLIC LIBRARY DEFINITION?` = C_FSCS,
+    `CONGRESSIONAL DISTRICT CODE` = CDCODE,
+    `CENSUS BLOCK CODE` = CENBLOCK,
+    `CENSUS TRACT CODE` = CENTRACT,
+    `GEOCODING MATCH SCORE` = GEOSCORE,
+    `E-RATE RECIPIENT NUMBER` = ros_entity_number,
+    `E-RATE LOCALE CATEGORY` = ros_urban_rural_status,
+    `E-RATE APPLICANT NAME` = organization_name.x,
+    `E-RATE APPLICANT TYPE` = organization_entity_type_name,
+    `E-RATE FUNDING YEAR` = funding_year,
+    `E-RATE APPLICATION NUMBER` = application_number,
+    `E-RATE FUNDING REQUEST NUMBER` = funding_request_number.x,
+    `E-RATE FRN LINE ITEM NUMBER` = form_471_line_item_number,
+    `E-RATE INTERNET SERVICE PROVIDER (ISP)` = spin_name,
+    `E-RATE FUNCTION` = form_471_function_name.x,
+    `E-RATE PRODUCT` = form_471_product_name.x,
+    `E-RATE DOWNLOAD SPEED MBPS` = download_speed_mbps,
+    `E-RATE UPLOAD SPEED MBPS` = upload_speed_mbps,
+    `E-RATE PRE-DISCOUNT MONTHLY COST` = total_monthly_cost.x,
+    `E-RATE DISCOUNT PERCENTAGE` = dis_pct,
+    `E-RATE TRIBAL TYPE` = tribal_type,
+    `E-RATE FIBER TYPES` = form_471_frn_fiber_type_name,
+    `E-RATE FIBER SUBTYPES` = form_471_frn_fiber_sub_type_name,
+    `CONNECTION PURPOSE` = form_471_purpose_name,
+    `DIRECT CONNECTION` = connection_directly_school,
+    `WAN CONNECTION` = connection_supports_service
+  )
+```
+
+```{r}
+# Save the file to Github for reference
+write.csv(imls_out_2021, "~/Documents/GitHub/E-Rate/Data/One_Big_CSV.csv")
+```
+
+
+

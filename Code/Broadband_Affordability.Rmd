@@ -60,7 +60,11 @@ purpose <-
 #imls_ae_2021 <- s3read_using(FUN = read.csv, object = "data/IMLS_PLS/2021_IMLS_PLS_AE.csv", bucket = "erate-data")
 
 # Read in IMLS PLS AE 2021 dataset stored in S3
-imls_outs <- s3read_using(FUN = read.csv, object = "data/IMLS_PLS/2014-2021_IMLS_Outlets_Unique.csv.csv", bucket = "erate-data")
+imls_outlets <- 
+  s3read_using(
+    FUN = read.csv,
+    object = "2014-2021_IMLS_Outlets_Unique.csv",
+    bucket = "erate-data/data/IMLS_PLS")
 ```
 
 ```{r}

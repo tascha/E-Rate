@@ -1,0 +1,63 @@
+---
+title: "IMLS PLS Outlet Mashup"
+author: "Bree Norlander"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+#output: html_notebook
+---
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(ggplot2)
+library(aws.s3)
+library(glue)
+```
+
+```{r}
+# https://stackoverflow.com/a/29419402
+years <- list("2016", "2017", "2018", "2019", "2020", "2021")
+
+#define custom function to add columns to data frame if they do not exist
+# https://www.statology.org/r-add-column-if-does-not-exist/
+add_cols <- function(df, cols) {
+  add <- cols[!cols %in% names(df)]
+  if(length(add) !=0 ) df[add] <- NA
+  return(df)
+}
+
+datalist = list()
+for (i in 1:length(years)) {
+  data <- s3read_using(FUN = read.csv, object = glue("{years[i]}_IMLS_PLS_OUTLET.csv"), bucket = "erate-data/data/IMLS_PLS")
+  
+  data <- data |> 
+    as.data.frame() |> 
+    mutate(PLS_YEAR = years[i]) |> 
+    add_cols(c('GEOSCORE')) |> 
+    select(FSCSKEY, FSCS_SEQ, LIBNAME, ADDRESS, CITY, ZIP, STABR, CNTY, LONGITUD, LATITUDE, LOCALE, C_OUT_TY, C_FSCS, CDCODE, CENBLOCK, CENTRACT, GEOSCORE, SQ_FEET, ZIP4, PLS_YEAR)
+    
+  datalist[[i]] <- data
+}
+outlets <- do.call(rbind, datalist)
+#outlets <- as.data.frame(outlets)
+```
+
+```{r}
+outlets <- outlets |> 
+  unnest(PLS_YEAR) |> # This was a list for some reason
+  group_by(FSCSKEY, FSCS_SEQ) |> 
+  slice_max(PLS_YEAR) |> 
+  rename(MOST_RECENT_PLS_YEAR = PLS_YEAR)
+```
+
+```{r}
+# Write out dataset to S3
+s3write_using(
+  outlets,
+  FUN = write.csv,
+  row.names = F,
+  bucket = "erate-data/data/IMLS_PLS",
+  object = "2016-2021_IMLS_Outlets_Unique.csv"
+)
+```
+

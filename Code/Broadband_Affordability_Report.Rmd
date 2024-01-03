@@ -1,0 +1,369 @@
+---
+title: "Broadband_Affordability_Report"
+author: "Bree Norlander"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output: pdf_document
+knit: (function(inputFile, encoding) { rmarkdown::render(inputFile, encoding = encoding, output_file = file.path(dirname(inputFile), paste0("Broadband_Affordability_Report_", Sys.Date(), ".pdf"))) })
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(dev = 'pdf')
+```
+
+# Broadband Pricing in Erate Applications
+
+All included tables have applications for the purpose, 'Applicant owned fiber network, eligible fiber electronics, or maintenance & operations', filtered out.
+
+```{r, include=FALSE}
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(ggplot2)
+library(aws.s3)
+library(janitor)
+library(glue)
+library(kableExtra)
+```
+
+```{r, include=FALSE, cache=TRUE}
+# Read in cat1 erate data
+# https://stackoverflow.com/a/29419402
+years <- list("2016", "2017", "2018", "2019", "2020", "2021", "2022")
+datalist = list()
+for (i in 1:length(years)) {
+  data <- s3read_using(FUN = read.csv,
+                       na.strings = c("", " ", "N/A", "n/a"),
+                       object = glue("{years[i]}_Libraries_Funded_Committed_Category_1.csv"),
+                       bucket = "erate-data/data/AVI8-SVP9_Commitments")
+    
+  datalist[[i]] <- data |> 
+    rowwise() |> 
+    mutate(original_allocation = ifelse("original_allocation" %in% names(data), original_allocation, NA)) # some years don't have this column add it in #https://stackoverflow.com/a/45858094
+  
+}
+cat1 <- do.call(rbind, datalist)
+
+# Read in purposes erate data
+# https://stackoverflow.com/a/29419402
+datalist = list()
+for (i in 1:length(years)) {
+  data <- s3read_using(FUN = read.csv,
+                       na.strings = c("", " ", "N/A", "n/a"),
+                       object = glue("{years[i]}_Full_Purpose.csv"),
+                       bucket = "erate-data/data/HBJ5-2BPJ_Purpose")
+    
+  datalist[[i]] <- data |> 
+    rowwise() |> 
+    mutate(connection_used_by = ifelse("connection_used_by" %in% names(data), connection_used_by, NA)) # some years don't have this column add it in #https://stackoverflow.com/a/45858094
+  
+}
+purposes <- do.call(rbind, datalist)
+
+# Read in IMLS USAC matches
+matches <-
+  s3read_using(
+    FUN = read.csv,
+    na.strings = c("", " ", "N/A", "n/a"),
+    object = "Algorithmic_Matches.csv",
+    bucket = "erate-data/data/USAC_IMLS_Match"
+  )
+
+# Read in IMLS PLS AE 2021 dataset stored in S3
+imls_outlets <- 
+  s3read_using(
+    FUN = read.csv,
+    object = "2014-2021_IMLS_Outlets_Unique.csv",
+    bucket = "erate-data/data/IMLS_PLS")
+```
+
+```{r, include=FALSE, cache=TRUE}
+# We only want imls outlets that existed from 2016 on
+# Also add in descriptions of the Locales
+imls_outlets <- imls_outlets |> 
+  filter(MOST_RECENT_PLS_YEAR > 2015) |> 
+  mutate(
+    LOCALE_DESCR = case_when(
+      LOCALE == 11 ~ "City Large",
+      LOCALE == 12 ~ "City Midsize",
+      LOCALE == 13 ~ "City Small",
+      LOCALE == 21 ~ "Suburban Large",
+      LOCALE == 22 ~ "Suburban Midsize",
+      LOCALE == 23 ~ "Suburban Small",
+      LOCALE == 31 ~ "Town Fringe",
+      LOCALE == 32 ~ "Town Distant",
+      LOCALE == 33 ~ "Town Remote",
+      LOCALE == 41 ~ "Rural Fringe",
+      LOCALE == 42 ~ "Rural Distant",
+      LOCALE == 43 ~ "Rural Remote"
+    )) %>% 
+  # separate to create high-level category
+  # https://stackoverflow.com/a/53701998
+  separate(LOCALE_DESCR, 
+        into = c("LOCALE_TOP_LEVEL_DESCR", NA),
+        sep = " ",
+        remove = F)
+```
+
+```{r, include=FALSE, cache=TRUE}
+# Add ros_entity_numbers to imls_outlets
+# This will increase the rows because sometimes multiple ros_entity_numbers
+# match a single imls outlet
+imls_outlets <- imls_outlets |> 
+  left_join(matches |> 
+              select(FSCSKEY, FSCS_SEQ, ros_entity_number),
+            by = join_by(FSCSKEY, FSCS_SEQ))
+```
+
+```{r, include=FALSE, cache=TRUE}
+# Create the dataset for analysis
+# Add in IMLS designators and normalize the upload/download speeds
+# Add in a calculation of the download_cost_per_mbps_per_month 
+cat1_wrangled <- cat1 |>
+  left_join(imls_outlets,
+            by = join_by(ros_entity_number)) |>
+  mutate(
+    download_speed_mbps = case_when(
+      form_471_download_speed_unit_name == "Mbps" ~ as.numeric(download_speed),
+      form_471_download_speed_unit_name == "Gbps" ~ as.numeric(download_speed) * 1000
+    )
+  ) %>%
+  mutate(
+    upload_speed_mbps = case_when(
+      form_471_upload_speed_unit_name == "Mbps" ~ as.numeric(upload_speed),
+      form_471_upload_speed_unit_name == "Gbps" ~ as.numeric(upload_speed) * 1000
+    )
+  ) |>
+  mutate(download_cost_per_mbps_per_month = case_when(
+    !is.na(monthly_recurring_unit_eligible_costs) &&
+      !is.na(download_speed_mbps) ~ as.numeric(monthly_recurring_unit_eligible_costs) /
+      as.numeric(download_speed_mbps)
+  )) |> 
+  filter(!is.na(FSCSKEY)) |> 
+  distinct(ros_entity_number, FSCSKEY, FSCS_SEQ, ros_entity_name, ros_entity_type, ros_subtype, ros_physical_state, ros_urban_rural_status, LOCALE_DESCR,LOCALE_TOP_LEVEL_DESCR, MOST_RECENT_PLS_YEAR, billed_entity_number, organization_name, organization_entity_type_name, org_state, funding_year, application_number, form_471_line_item_number, form_471_function_name, form_471_product_name, total_monthly_cost, monthly_recurring_unit_eligible_costs, download_speed_mbps, upload_speed_mbps, download_cost_per_mbps_per_month) |> 
+  filter(!is.na(download_speed_mbps),
+         form_471_product_name != "Data plan for portable device",
+         form_471_product_name != "Maintenance and Technical Support") |> 
+  add_count(ros_entity_number, form_471_function_name, form_471_product_name, funding_year, name="how_many_of_same_connection") |> 
+  mutate(weight_for_mean = 1 / how_many_of_same_connection) |>  # Create a weight for mean calc
+  # Add in purposes dataset
+  mutate_at(c('application_number', 'form_471_line_item_number', 'funding_year'), as.numeric) |> 
+  left_join((purposes %>% 
+               select(application_number, form_471_line_item_number, form_471_purpose_name, form_version, connection_directly_school, connection_supports_service, funding_year) %>% 
+               filter(form_version == "Current") %>% 
+               mutate(application_number = as.numeric(application_number),
+                      form_471_line_item_number = as.numeric(form_471_line_item_number))
+             ), 
+            by=c("application_number", "form_471_line_item_number", "funding_year")) 
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results="asis", fig.align = "center"}
+cat1_wrangled |> 
+  filter(form_471_purpose_name != 'Applicant owned fiber network, eligible fiber electronics, or maintenance & operations') |> 
+  group_by(funding_year) |> 
+  summarise(min = min(download_cost_per_mbps_per_month, na.rm = T),
+            max = max(download_cost_per_mbps_per_month, na.rm = T),
+            mean = mean(download_cost_per_mbps_per_month, na.rm = T),
+            wtd_mean = weighted.mean(x=download_cost_per_mbps_per_month, w=weight_for_mean, na.rm=TRUE),
+            median = median(download_cost_per_mbps_per_month, na.rm = T),
+            sd = sd(download_cost_per_mbps_per_month, na.rm = T),
+            number_rows = n(),
+            unique_entitites = n_distinct(ros_entity_number)) |> 
+    kable(caption = "Summary statistics by year",
+      booktabs = T,
+      longtable = TRUE,
+      digits = 2
+    ) 
+```
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results="asis", fig.align = "center"}
+cat1_wrangled |>
+  filter(form_471_purpose_name != 'Applicant owned fiber network, eligible fiber electronics, or maintenance & operations') |> 
+  group_by(form_471_purpose_name, funding_year) |>
+  summarise(min = min(download_cost_per_mbps_per_month, na.rm = T),
+            max = max(download_cost_per_mbps_per_month, na.rm = T),
+            mean = mean(download_cost_per_mbps_per_month, na.rm = T),
+            wtd_mean = weighted.mean(x=download_cost_per_mbps_per_month, w=weight_for_mean, na.rm=TRUE),
+            median = median(download_cost_per_mbps_per_month, na.rm = T),
+            sd = sd(download_cost_per_mbps_per_month, na.rm = T),
+            number_rows = n(),
+            unique_entitites = n_distinct(ros_entity_number)) |>
+  kable(caption = "Summary statistics by year and purpose",
+        booktabs = T,
+        longtable = T,
+        digits = 2) %>%
+  # https://stackoverflow.com/a/64124545/5593458 about font size and longtable
+  kable_styling(latex_options = c("repeat_header", "HOLD_position", "striped"), font_size = 7) %>%
+  column_spec(1, width = "15em") |> 
+  landscape()# Force column 2 to wrap and be narrower
+```
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results="asis", fig.align = "center"}
+cat1_wrangled |>
+  filter(form_471_purpose_name != 'Applicant owned fiber network, eligible fiber electronics, or maintenance & operations') |> 
+  group_by(funding_year, LOCALE_TOP_LEVEL_DESCR) |>
+  summarise(min = min(download_cost_per_mbps_per_month, na.rm = T),
+            max = max(download_cost_per_mbps_per_month, na.rm = T),
+            mean = mean(download_cost_per_mbps_per_month, na.rm = T),
+            wtd_mean = weighted.mean(x=download_cost_per_mbps_per_month, w=weight_for_mean, na.rm=TRUE),
+            median = median(download_cost_per_mbps_per_month, na.rm = T),
+            sd = sd(download_cost_per_mbps_per_month, na.rm = T),
+            number_rows = n(),
+            unique_entitites = n_distinct(ros_entity_number)) |>
+  kable(caption = "Summary statistics by year and IMLS locale",
+        booktabs = T,
+        digits = 2) |> 
+  kable_styling(latex_options = c("scale_down", "striped")) |> 
+  pack_rows(
+  index = c("2016" = 4, "2017" = 4, "2018" = 4, "2019" = 4, "2020" = 4, "2021" = 4, "2022" = 4)
+) |> 
+  landscape()
+```
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results="asis", fig.align = "center"}
+cat1_wrangled |>
+  filter(form_471_purpose_name != 'Applicant owned fiber network, eligible fiber electronics, or maintenance & operations') |> 
+  group_by(funding_year, organization_entity_type_name) |>
+  summarise(min = min(download_cost_per_mbps_per_month, na.rm = T),
+            max = max(download_cost_per_mbps_per_month, na.rm = T),
+            mean = mean(download_cost_per_mbps_per_month, na.rm = T),
+            wtd_mean = weighted.mean(x=download_cost_per_mbps_per_month, w=weight_for_mean, na.rm=TRUE),
+            median = median(download_cost_per_mbps_per_month, na.rm = T),
+            sd = sd(download_cost_per_mbps_per_month, na.rm = T),
+            number_rows = n(),
+            unique_entitites = n_distinct(ros_entity_number)) |>
+  kable(caption = "Summary statistics by year and organization entity type",
+        booktabs = T,
+        digits = 2) |> 
+  kable_styling(latex_options = c("scale_down", "striped")) |> 
+  pack_rows(
+  index = c("2016" = 3, "2017" = 3, "2018" = 3, "2019" = 3, "2020" = 3, "2021" = 3, "2022" = 3)
+) |> 
+  landscape()
+```
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results="asis", fig.align = "center"}
+cat1_wrangled |>
+  filter(form_471_purpose_name != 'Applicant owned fiber network, eligible fiber electronics, or maintenance & operations') |> 
+  group_by(funding_year, form_471_function_name) |>
+  summarise(min = min(download_cost_per_mbps_per_month, na.rm = T),
+            max = max(download_cost_per_mbps_per_month, na.rm = T),
+            mean = mean(download_cost_per_mbps_per_month, na.rm = T),
+            wtd_mean = weighted.mean(x=download_cost_per_mbps_per_month, w=weight_for_mean, na.rm=TRUE),
+            median = median(download_cost_per_mbps_per_month, na.rm = T),
+            sd = sd(download_cost_per_mbps_per_month, na.rm = T),
+            number_rows = n(),
+            unique_entitites = n_distinct(ros_entity_number)) |>
+  kable(caption = "Summary statistics by year and application function",
+        booktabs = T,
+        longtable = T,
+        digits = 2) |> 
+  kable_styling(latex_options = c("repeat_header", "HOLD_position", "striped"), font_size = 7) |> 
+  pack_rows(
+  index = c("2016" = 5, "2017" = 5, "2018" = 5, "2019" = 5, "2020" = 5, "2021" = 5, "2022" = 5)
+) |> 
+  landscape()
+```
+
+# The following tables filter out the "Miscellaneous" function (it is not included in the data)
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results="asis", fig.align = "center"}
+cat1_wrangled |> 
+  filter(form_471_function_name != 'Miscellaneous',
+         form_471_purpose_name != 'Applicant owned fiber network, eligible fiber electronics, or maintenance & operations') |> 
+  group_by(funding_year) |> 
+  summarise(min = min(download_cost_per_mbps_per_month, na.rm = T),
+            max = max(download_cost_per_mbps_per_month, na.rm = T),
+            mean = mean(download_cost_per_mbps_per_month, na.rm = T),
+            wtd_mean = weighted.mean(x=download_cost_per_mbps_per_month, w=weight_for_mean, na.rm=TRUE),
+            median = median(download_cost_per_mbps_per_month, na.rm = T),
+            sd = sd(download_cost_per_mbps_per_month, na.rm = T),
+            number_rows = n(),
+            unique_entitites = n_distinct(ros_entity_number)) |> 
+    kable(caption = "Summary statistics by year",
+      booktabs = T,
+      longtable = TRUE,
+      digits = 2
+    ) 
+```
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results="asis", fig.align = "center"}
+cat1_wrangled |>
+  filter(form_471_function_name != 'Miscellaneous',
+         form_471_purpose_name != 'Applicant owned fiber network, eligible fiber electronics, or maintenance & operations') |> 
+  group_by(form_471_purpose_name, funding_year) |>
+  summarise(min = min(download_cost_per_mbps_per_month, na.rm = T),
+            max = max(download_cost_per_mbps_per_month, na.rm = T),
+            mean = mean(download_cost_per_mbps_per_month, na.rm = T),
+            wtd_mean = weighted.mean(x=download_cost_per_mbps_per_month, w=weight_for_mean, na.rm=TRUE),
+            median = median(download_cost_per_mbps_per_month, na.rm = T),
+            sd = sd(download_cost_per_mbps_per_month, na.rm = T),
+            number_rows = n(),
+            unique_entitites = n_distinct(ros_entity_number)) |>
+  kable(caption = "Summary statistics by year and purpose",
+        booktabs = T,
+        longtable = T,
+        digits = 2) %>%
+  # https://stackoverflow.com/a/64124545/5593458 about font size and longtable
+  kable_styling(latex_options = c("repeat_header", "HOLD_position", "striped"), font_size = 7) %>%
+  column_spec(1, width = "15em") |> 
+  landscape()# Force column 2 to wrap and be narrower
+```
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results="asis", fig.align = "center"}
+cat1_wrangled |>
+  filter(form_471_function_name != 'Miscellaneous',
+         form_471_purpose_name != 'Applicant owned fiber network, eligible fiber electronics, or maintenance & operations') |> 
+  group_by(funding_year, LOCALE_TOP_LEVEL_DESCR) |>
+  summarise(min = min(download_cost_per_mbps_per_month, na.rm = T),
+            max = max(download_cost_per_mbps_per_month, na.rm = T),
+            mean = mean(download_cost_per_mbps_per_month, na.rm = T),
+            wtd_mean = weighted.mean(x=download_cost_per_mbps_per_month, w=weight_for_mean, na.rm=TRUE),
+            median = median(download_cost_per_mbps_per_month, na.rm = T),
+            sd = sd(download_cost_per_mbps_per_month, na.rm = T),
+            number_rows = n(),
+            unique_entitites = n_distinct(ros_entity_number)) |>
+  kable(caption = "Summary statistics by year and IMLS locale",
+        booktabs = T,
+        digits = 2) |> 
+  kable_styling(latex_options = c("scale_down", "striped")) |> 
+  pack_rows(
+  index = c("2016" = 4, "2017" = 4, "2018" = 4, "2019" = 4, "2020" = 4, "2021" = 4, "2022" = 4)
+) |> 
+  landscape()
+```
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results="asis", fig.align = "center"}
+cat1_wrangled |>
+  filter(form_471_function_name != 'Miscellaneous',
+         form_471_purpose_name != 'Applicant owned fiber network, eligible fiber electronics, or maintenance & operations') |> 
+  group_by(funding_year, organization_entity_type_name) |>
+  summarise(min = min(download_cost_per_mbps_per_month, na.rm = T),
+            max = max(download_cost_per_mbps_per_month, na.rm = T),
+            mean = mean(download_cost_per_mbps_per_month, na.rm = T),
+            wtd_mean = weighted.mean(x=download_cost_per_mbps_per_month, w=weight_for_mean, na.rm=TRUE),
+            median = median(download_cost_per_mbps_per_month, na.rm = T),
+            sd = sd(download_cost_per_mbps_per_month, na.rm = T),
+            number_rows = n(),
+            unique_entitites = n_distinct(ros_entity_number)) |>
+  kable(caption = "Summary statistics by year and organization entity type",
+        booktabs = T,
+        digits = 2) |> 
+  kable_styling(latex_options = c("scale_down", "striped")) |> 
+  pack_rows(
+  index = c("2016" = 3, "2017" = 3, "2018" = 3, "2019" = 3, "2020" = 3, "2021" = 3, "2022" = 3)
+) |> 
+  landscape()
+```
+
+
+
+
