@@ -43,11 +43,35 @@ outlets <- do.call(rbind, datalist)
 ```
 
 ```{r}
+# Read in the AE data to get the AEs population
+datalist = list()
+for (i in 1:length(years)) {
+  data <- s3read_using(FUN = read.csv, object = glue("{years[i]}_IMLS_PLS_AE.csv"), bucket = "erate-data/data/IMLS_PLS")
+  
+  data <- data |> 
+    as.data.frame() |> 
+    mutate(PLS_YEAR = years[i]) |> 
+    #add_cols(c('GEOSCORE')) |> 
+    select(FSCSKEY, POPU_LSA, PLS_YEAR)
+    
+  datalist[[i]] <- data
+}
+aes <- do.call(rbind, datalist)
+```
+
+```{r}
+# Add POPU_LSA to the outlets data
+outlets <- outlets |> 
+  left_join(aes, by = c('FSCSKEY', 'PLS_YEAR'))
+```
+
+```{r}
 outlets <- outlets |> 
   unnest(PLS_YEAR) |> # This was a list for some reason
   group_by(FSCSKEY, FSCS_SEQ) |> 
   slice_max(PLS_YEAR) |> 
-  rename(MOST_RECENT_PLS_YEAR = PLS_YEAR)
+  rename(MOST_RECENT_PLS_YEAR = PLS_YEAR,
+         POPU_LSA_FROM_AE = POPU_LSA)
 ```
 
 ```{r}
