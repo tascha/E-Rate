@@ -20,44 +20,48 @@ commitments <- s3read_using(FUN = read.csv,
                        object = "Libraries_Funded_Committed_AVI8-SVP9.csv",
                        bucket = "erate-data/data/AVI8-SVP9_Commitments")
 
+# Reduce down to 2022 and 2023
+commitments <- commitments |> 
+  filter(funding_year > 2021)
+
 ```
 
 ```{r}
-purpose2016 <- s3read_using(FUN = read.csv,
-                       na.strings = c("", " ", "N/A", "n/a"),
-                       object = "2016_Full_Purpose.csv",
-                       bucket = "erate-data/data/HBJ5-2BPJ_Purpose")
-
-purpose2016 <- purpose2016 |> 
-  select(-connection_used_by)
-
-purpose2017 <- s3read_using(FUN = read.csv,
-                       na.strings = c("", " ", "N/A", "n/a"),
-                       object = "2017_Full_Purpose.csv",
-                       bucket = "erate-data/data/HBJ5-2BPJ_Purpose")
-
-purpose2017 <- purpose2017 |> 
-  select(-connection_used_by)
-
-purpose2018 <- s3read_using(FUN = read.csv,
-                       na.strings = c("", " ", "N/A", "n/a"),
-                       object = "2018_Full_Purpose.csv",
-                       bucket = "erate-data/data/HBJ5-2BPJ_Purpose")
-
-purpose2019 <- s3read_using(FUN = read.csv,
-                       na.strings = c("", " ", "N/A", "n/a"),
-                       object = "2019_Full_Purpose.csv",
-                       bucket = "erate-data/data/HBJ5-2BPJ_Purpose")
-
-purpose2020 <- s3read_using(FUN = read.csv,
-                       na.strings = c("", " ", "N/A", "n/a"),
-                       object = "2020_Full_Purpose.csv",
-                       bucket = "erate-data/data/HBJ5-2BPJ_Purpose")
-
-purpose2021 <- s3read_using(FUN = read.csv,
-                       na.strings = c("", " ", "N/A", "n/a"),
-                       object = "2021_Full_Purpose.csv",
-                       bucket = "erate-data/data/HBJ5-2BPJ_Purpose")
+# purpose2016 <- s3read_using(FUN = read.csv,
+#                        na.strings = c("", " ", "N/A", "n/a"),
+#                        object = "2016_Full_Purpose.csv",
+#                        bucket = "erate-data/data/HBJ5-2BPJ_Purpose")
+# 
+# purpose2016 <- purpose2016 |> 
+#   select(-connection_used_by)
+# 
+# purpose2017 <- s3read_using(FUN = read.csv,
+#                        na.strings = c("", " ", "N/A", "n/a"),
+#                        object = "2017_Full_Purpose.csv",
+#                        bucket = "erate-data/data/HBJ5-2BPJ_Purpose")
+# 
+# purpose2017 <- purpose2017 |> 
+#   select(-connection_used_by)
+# 
+# purpose2018 <- s3read_using(FUN = read.csv,
+#                        na.strings = c("", " ", "N/A", "n/a"),
+#                        object = "2018_Full_Purpose.csv",
+#                        bucket = "erate-data/data/HBJ5-2BPJ_Purpose")
+# 
+# purpose2019 <- s3read_using(FUN = read.csv,
+#                        na.strings = c("", " ", "N/A", "n/a"),
+#                        object = "2019_Full_Purpose.csv",
+#                        bucket = "erate-data/data/HBJ5-2BPJ_Purpose")
+# 
+# purpose2020 <- s3read_using(FUN = read.csv,
+#                        na.strings = c("", " ", "N/A", "n/a"),
+#                        object = "2020_Full_Purpose.csv",
+#                        bucket = "erate-data/data/HBJ5-2BPJ_Purpose")
+# 
+# purpose2021 <- s3read_using(FUN = read.csv,
+#                        na.strings = c("", " ", "N/A", "n/a"),
+#                        object = "2021_Full_Purpose.csv",
+#                        bucket = "erate-data/data/HBJ5-2BPJ_Purpose")
 
 purpose2022 <- s3read_using(FUN = read.csv,
                        na.strings = c("", " ", "N/A", "n/a"),
@@ -69,9 +73,9 @@ purpose2023 <- s3read_using(FUN = read.csv,
                        object = "2023_Full_Purpose.csv",
                        bucket = "erate-data/data/HBJ5-2BPJ_Purpose")
 
-purpose <- rbind(purpose2016, purpose2017, purpose2018, purpose2019, purpose2020, purpose2021, purpose2022, purpose2023)
+purpose <- rbind(purpose2022, purpose2023)
 
-rm(purpose2016, purpose2017, purpose2018, purpose2019, purpose2020, purpose2021, purpose2022, purpose2023)
+rm(purpose2022, purpose2023)
 ```
 
 ```{r}
@@ -115,6 +119,50 @@ commitments <- commitments |>
 # Add in imls data
 commitments <- commitments |> 
   left_join(imls, by = c("FSCSKEY", "FSCS_SEQ"))
+```
+
+```{r}
+# Add column with population category derived from the IMLS AE population column
+commitments <- commitments |> 
+  mutate(pop_category = case_when(
+    POPU_LSA_FROM_AE == -3 ~ "closedAE",
+    POPU_LSA_FROM_AE == -9 ~ "suppressed",
+    is.na(POPU_LSA_FROM_AE) ~ "unknown",
+    POPU_LSA_FROM_AE < 50000 ~ "under50",
+    POPU_LSA_FROM_AE >= 50000 ~ "over50"
+  ))
+```
+
+```{r}
+# Add column indicating whether the FCC target is met (population and download speed req)
+commitments <- commitments |> 
+  mutate(fcc_speed_benchmark = case_when(
+      POPU_LSA_FROM_AE == -3 ~ "computation error LSA equals -3",
+      POPU_LSA_FROM_AE == -9 ~ "computation error LSA equals -9",
+      is.na(POPU_LSA_FROM_AE) ~ "computation error no LSA",
+      is.na(download_speed_mbps) ~ NA,
+      download_speed_mbps >= 100 & POPU_LSA_FROM_AE < 50000 ~ "bandwidth target met",
+      download_speed_mbps >= 1000 & POPU_LSA_FROM_AE >= 50000 ~ "bandwidth target met",
+      download_speed_mbps < 100 ~ "bandwidth target not met",
+      download_speed_mbps < 1000 & POPU_LSA_FROM_AE >= 50000 ~ "bandwidth target not met"
+    )) |> 
+  mutate(symmetrical_gig = case_when(
+    is.na(download_speed_mbps) ~ NA,
+    download_speed_mbps >= 1000 & upload_speed_mbps >= 1000 ~ TRUE,
+    .default = FALSE
+  )) |> 
+  mutate(bead_class = case_when(
+    is.na(symmetrical_gig) ~ NA,
+    symmetrical_gig == TRUE ~ "class1",
+    symmetrical_gig == FALSE & form_471_function_name == "Fiber" ~ "class2",
+    symmetrical_gig == FALSE & form_471_function_name == "Copper" & form_471_product_name == "Cable Modem" ~ "class2",
+    symmetrical_gig == FALSE & form_471_function_name == "Copper" & form_471_product_name == "Switched Multimegabit Data System" ~ "class2",
+    symmetrical_gig == FALSE & form_471_function_name == "Other" & form_471_product_name == "Other" ~ "class2",
+    symmetrical_gig == FALSE & form_471_function_name == "Other" & form_471_product_name == "Broadband Over Power Lines" ~ "class2",
+    symmetrical_gig == FALSE & form_471_function_name == "Other" & form_471_product_name == "Radio Loop" ~ "class2",
+    symmetrical_gig == FALSE & form_471_function_name == "Wireless" & form_471_product_name == "Microwave" ~ "class2",
+    .default = "class3"
+  ))
 ```
 
 ```{r}
@@ -162,11 +210,14 @@ commitments_clean <- commitments |>
     `CENSUS BLOCK CODE` = CENBLOCK,
     `CENSUS TRACT CODE` = CENTRACT,
     `GEOCODING MATCH SCORE` = GEOSCORE,
+    `MOST RECENT PLS YEAR` = MOST_RECENT_PLS_YEAR,
+    `POPULATION CATEGORY` = pop_category,
     `E-RATE RECIPIENT NUMBER` = ros_entity_number,
     `E-RATE LOCALE CATEGORY` = ros_urban_rural_status,
     `E-RATE APPLICANT NAME` = organization_name.x,
     `E-RATE APPLICANT TYPE` = organization_entity_type_name,
     `E-RATE FUNDING YEAR` = funding_year,
+    `E_RATE CATEGORY OF SERVICE` = chosen_category_of_service,
     `E-RATE APPLICATION NUMBER` = application_number,
     `E-RATE FUNDING REQUEST NUMBER` = funding_request_number.x,
     `E-RATE FRN LINE ITEM NUMBER` = form_471_line_item_number,
@@ -182,13 +233,17 @@ commitments_clean <- commitments |>
     `E-RATE FIBER SUBTYPES` = form_471_frn_fiber_sub_type_name,
     `CONNECTION PURPOSE` = form_471_purpose_name,
     `DIRECT CONNECTION` = connection_directly_school,
-    `WAN CONNECTION` = connection_supports_service
+    `WAN CONNECTION` = connection_supports_service,
+    `FCC BANDWIDTH TARGET MET` = fcc_speed_benchmark,
+    `HAS SYMMETRICAL GIG` = symmetrical_gig,
+    `BEAD CLASS` = bead_class,
+    `SOURCE OF DATA`
   )
 ```
 
 ```{r}
 # Save the file to Github for reference
-write.csv(imls_out_2021, "~/Documents/GitHub/E-Rate/Data/One_Big_CSV.csv")
+write.csv(commitments_clean, "~/Documents/GitHub/E-Rate/Data/One_Big_CSV_2022-2023.csv")
 ```
 
 
