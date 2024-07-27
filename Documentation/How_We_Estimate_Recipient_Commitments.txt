@@ -1,0 +1,35 @@
+How do you calculate Category 1 commitments for each entity?
+
+For libraries that receive a commitment when applying as a single entity, we take the total from the "FRN Line Total Post-Discount Cost" field (API field name - post_discount_extended_eligible_line_item_costs).
+
+For libraries that receive a commitment when applying as a library system or as a member of a consortium, we take the total from the "FRN Line Total Post-Discount Cost" field (API field name - post_discount_extended_eligible_line_item_costs)
+and divide it by the total number of recipients that have the same "Funding Request Line Item Number" (API field name - form_471_line_item_number). We are not aware of data available within the commitments data set that shows the actual allocation of funding per recipient
+and so arrived at this method for estimating the commitments among a group of recipients.
+
+
+Let's look at an application (211031862) from Acadia Parish Library and each funding request in a little bit more detail.
+
+In this example, we'll look at the From 471 from Acadia Parish Library (http://publicdata.usac.org/SL/Prd/Form471/346147/221007497/Original/USAC_FCC_FORM_471_APPLICATION_221007497_CERTIFIED.pdf)
+includes two funding requests, each with a single Funding Request Line Item Number. Each of the Funding Request Numbers covers 7 entities - 
+the main library and 6 branches - for a total of 7 recipients for each funding request.
+
+Funding Request 1 - FRN 2199057816 and FRN Line Item 2199057816.001
+The total from the "FRN Line Total Post-Discount Cost" field for the first FRN and line item request is $15,109.20. As there are 7 recipients, each of the recipients is estimated to have received $2,158.45.
+
+Funding Request 2 - FRN  2199057982 and FRN Line Item  2199057982.001
+The total from the "FRN Line Total Post-Discount Cost" field for the second FRN and line item request is $67,964.40. As there are 7 recipients, each of the recipients is estimated to have received $9,709.20.
+
+If we look up Church Point Branch in the recipient view on the E-Rate Dashboard, the following totals for Funding Year 2021 for Category 1 is returned: $11,867.66	
+This total comes from the two FRN line items, with FRN 2199057816 adding in $2,158.45 and FRN 2199057982 adding in $9,709.20 for a total of $11,867.65.
+
+All data for estimated commitments is pulled from the following data set:
+E-Rate Recipient Details And Commitments
+https://opendata.usac.org/E-rate/E-Rate-Recipient-Details-And-Commitments/avi8-svp9
+
+
+****** still drafting below ******* 
+
+This application from Shreve Memorial Library shows another example in a different format. http://publicdata.usac.org/SL/Prd/Form471/346197/221006892/Original/USAC_FCC_FORM_471_APPLICATION_221006892_CERTIFIED.pdf
+
+
+
