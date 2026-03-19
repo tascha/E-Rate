@@ -22,7 +22,7 @@ The other options are for "school" and school district" which will be excluded m
 Step 2. Filter to find library entities through a partial string match and to find non-instructional facilities in the Recipients Entity Type field
 Then filter on "Recipient Entity Type" (API field name = "ros_entity_type"). Searching within this field we want to keep anything that contains the letter combination "libr" AND anything of the type "non-instructional facility (nif)"
 
-In this step, we refine the filter by adding in a filter on the types of recipients. This allows us to include any library entity that is particiapting as part of a consortium and also allows us to find Non-Instructional Facilities that we think are associated with libraries based on their name. 
+In this step, we refine the filter by adding a filter on the types of recipients. This allows us to include any library entity that is particiapting as part of a consortium and also allows us to find Non-Instructional Facilities that we think are associated with libraries based on their name. 
 
 Step 3. Refine filters of Recipients Entity Type field in combination with the Billed Entity Type field to eliminate non-library NIFs
 Filter to keep anything that meets any of the following conditions
